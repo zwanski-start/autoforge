@@ -201,6 +201,13 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
             <p className="text-foreground">{feature.description}</p>
           </div>
 
+          {/* Test Evidence recorded by agents */}
+          <FeatureEvidence
+            projectName={projectName}
+            featureId={feature.id}
+            evidenceCount={feature.evidence_count ?? 0}
+          />
+
           {/* Blocked By Warning */}
           {blockingDeps.length > 0 && (
             <Alert variant="destructive" className="border-orange-500 bg-orange-50 dark:bg-orange-950/20">
@@ -267,13 +274,6 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
               </ol>
             </div>
           )}
-
-          {/* Test Evidence recorded by agents */}
-          <FeatureEvidence
-            projectName={projectName}
-            featureId={feature.id}
-            evidenceCount={feature.evidence_count ?? 0}
-          />
         </div>
 
         {/* Actions */}
