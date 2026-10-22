@@ -252,6 +252,11 @@ def test_validate_rm():
             (f"rm -rf {outside}", False, "absolute path outside project"),
             ("rm -rf /etc/passwd", False, "system file"),
             ("rm -rf --no-preserve-root /", False, "no-preserve-root"),
+            ("rm -rf {../x,y}", False, "brace expansion to parent"),
+            ("rm -rf {~,x}", False, "brace expansion to home"),
+            ("rm -rf {/etc,x}", False, "brace expansion to absolute path"),
+            ("rm -rf x{/..,}/..", False, "brace expansion with dotdot"),
+            ("rm -rf x/~", False, "tilde not at start"),
             ("rm -rf", False, "missing target"),
         ]
 
@@ -269,20 +274,34 @@ def test_validate_rm():
                     print(f"         Reason: {reason}")
                 failed += 1
 
-        # Symlinked parent pointing outside the project must not be a bypass
-        link = project_dir / "escape"
+        # Symlinks pointing outside the project must not be a bypass
+        outside_dir = Path(tmp) / "outside"
+        outside_dir.mkdir()
+        (project_dir / "node_modules").mkdir()
         try:
-            link.symlink_to(Path(tmp), target_is_directory=True)
+            (project_dir / "esc").symlink_to(outside_dir, target_is_directory=True)
+            have_symlinks = True
         except (OSError, NotImplementedError):
-            link = None
-        if link is not None:
-            allowed, _ = validate_rm_command("rm -rf escape/other", project_dir)
-            if not allowed:
-                print("  PASS: 'rm -rf escape/other' (symlinked parent outside project)")
-                passed += 1
-            else:
-                print("  FAIL: 'rm -rf escape/other' (symlinked parent outside project)")
-                failed += 1
+            have_symlinks = False
+        if have_symlinks:
+            symlink_cases = [
+                ("rm -rf esc/other", False, "symlinked parent outside project"),
+                ("rm -rf esc/", False, "trailing slash follows symlink"),
+                ("rm -rf esc/.", False, "trailing /. follows symlink"),
+                ("rm -rf es*/", False, "glob with trailing slash follows symlink"),
+                ("rm -rf e*/victim.txt", False, "glob parent matches symlink"),
+                ("rm -rf esc", True, "unlink the symlink itself"),
+                ("rm -rf node_modules/", True, "trailing slash on real directory"),
+                ("rm -rf node_mod*/", True, "glob matching real directory"),
+            ]
+            for cmd, should_allow, description in symlink_cases:
+                allowed, reason = validate_rm_command(cmd, project_dir)
+                if allowed == should_allow:
+                    print(f"  PASS: {cmd!r} ({description})")
+                    passed += 1
+                else:
+                    print(f"  FAIL: {cmd!r} ({description}) - got {'allowed' if allowed else 'blocked'}: {reason}")
+                    failed += 1
 
         # Integration: hook passes project_dir through context
         input_data = {"tool_name": "Bash", "tool_input": {"command": "npm run build && rm -rf /"}}

@@ -391,7 +391,7 @@ blocked_commands:
 **Limits:**
 - Maximum 100 commands per project config
 - Blocklisted commands (sudo, dd, shutdown, etc.) can NEVER be allowed
-- `rm` targets must resolve inside the project directory (blocks `/`, `~`, `.`, `..`, `$VAR`, bare `*` at the project root, and paths escaping the project)
+- `rm` targets must resolve inside the project directory (blocks `/`, `~`, `.`, `..`, `$VAR`, `{a,b}` brace expansion, bare `*` at the project root, and paths escaping the project, including via symlinks followed by a trailing slash or glob)
 - Org-level blocked commands cannot be overridden by project configs
 
 **Files:**

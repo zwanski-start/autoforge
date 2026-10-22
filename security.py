@@ -6,6 +6,7 @@ Pre-tool-use hooks that validate bash commands for security.
 Uses an allowlist approach - only explicitly permitted commands can run.
 """
 
+import glob
 import logging
 import os
 import re
@@ -424,14 +425,28 @@ def _is_within(path: str, root: str) -> bool:
         return False
 
 
+def _resolve_rm_target(target: str, base: str) -> str:
+    """Resolve an rm target to the real path rm would act on."""
+    joined = os.path.normpath(os.path.join(base, target))
+    stripped = target.rstrip("/")
+    if target.endswith("/") or stripped == "." or stripped.endswith("/.") or stripped in ("", ".."):
+        # With a trailing slash (or '.'), rm follows a symlink to its target
+        return os.path.realpath(joined)
+    # Otherwise resolve symlinks in the parent only: rm removes a symlink
+    # itself, not what it points to.
+    parent, name = os.path.split(joined)
+    return os.path.join(os.path.realpath(parent), name) if name else os.path.realpath(joined)
+
+
 def validate_rm_command(command_string: str, project_dir: Optional[Path] = None) -> tuple[bool, str]:
     """
     Validate rm commands - targets must stay inside the project directory.
 
     Blocks:
     - Root, home, current/parent directory targets (rm -rf /, ~, ., ..)
-    - Home-relative and variable/command-substitution targets that can't be
-      validated statically (~/x, $HOME, `pwd`)
+    - Home, variable, command-substitution and brace-expansion targets that
+      can't be validated statically (~/x, $HOME, `pwd`, {../x,y})
+    - Symlinks followed via a trailing slash (link/) or a glob match
     - Bare wildcards at the project root (rm -rf *, rm -rf .*)
     - Absolute or ../ paths that resolve outside the project directory
       (or to the project directory itself)
@@ -468,19 +483,35 @@ def validate_rm_command(command_string: str, project_dir: Optional[Path] = None)
     base = os.path.realpath(str(project_dir) if project_dir else os.getcwd())
 
     for target in targets:
-        if target.startswith("~") or "$" in target or "`" in target:
-            return False, f"rm target '{target}' uses home/variable expansion and cannot be validated"
+        if any(ch in target for ch in "~$`{"):
+            return False, (
+                f"rm target '{target}' uses home, variable, command or brace expansion and cannot be validated"
+            )
 
-        joined = os.path.normpath(os.path.join(base, target))
-        # Resolve symlinks in the parent only: rm removes a symlink itself,
-        # not what it points to.
-        parent, name = os.path.split(joined)
-        resolved = os.path.join(os.path.realpath(parent), name) if name else os.path.realpath(joined)
+        candidates = [target]
+        if glob.has_magic(target):
+            # A glob can match a symlink (e.g. 'es*/' -> 'esc/'), so validate
+            # every path bash would expand it to, not just the pattern.
+            pattern = os.path.join(base, target)
+            candidates += glob.glob(pattern)
+            # Parent directories matched by a glob are followed by rm even
+            # when the final file doesn't exist yet (e.g. 'e*/x' via 'esc/').
+            parent_pattern = os.path.dirname(pattern.rstrip("/"))
+            while glob.has_magic(parent_pattern):
+                for match in glob.glob(parent_pattern):
+                    real = os.path.realpath(match)
+                    if real != base and not _is_within(real, base):
+                        return False, f"rm target '{target}' is outside the project directory"
+                parent_pattern = os.path.dirname(parent_pattern)
 
-        if not _is_within(resolved, base):
-            return False, f"rm target '{target}' is outside the project directory"
+        for candidate in candidates:
+            resolved = _resolve_rm_target(candidate, base)
+            if not _is_within(resolved, base):
+                return False, f"rm target '{target}' is outside the project directory"
 
         # Pure wildcard directly in the project root would wipe the whole project
+        resolved = _resolve_rm_target(target, base)
+        name = os.path.basename(resolved)
         if os.path.dirname(resolved) == base and re.fullmatch(r"[*?.]+", name) and re.search(r"[*?]", name):
             return False, f"rm target '{target}' would delete the entire project directory"
 
