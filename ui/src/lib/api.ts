@@ -49,6 +49,10 @@ async function fetchJSON<T>(url: string, options?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ detail: 'Unknown error' }))
+    // OIDC session missing or expired: sign in again, then come back here
+    if (response.status === 401 && typeof error.login_url === 'string') {
+      redirectToLogin(error.login_url)
+    }
     throw new Error(error.detail || `HTTP ${response.status}`)
   }
 
@@ -321,6 +325,16 @@ export async function getSetupStatus(): Promise<SetupStatus> {
 
 export async function getAuthInfo(): Promise<AuthInfo> {
   return fetchJSON('/auth/me')
+}
+
+/** Send the browser through the OIDC login, returning to the current page. */
+export function redirectToLogin(loginUrl = `${API_BASE}/auth/login`): void {
+  const next = window.location.pathname + window.location.search + window.location.hash
+  window.location.href = `${loginUrl}?next=${encodeURIComponent(next)}`
+}
+
+export async function logout(): Promise<{ logged_out: boolean; end_session_url: string | null }> {
+  return fetchJSON('/auth/logout', { method: 'POST' })
 }
 
 export async function healthCheck(): Promise<{ status: string }> {

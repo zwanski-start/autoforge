@@ -291,7 +291,11 @@ class SetupStatus(BaseModel):
 class AuthInfo(BaseModel):
     """Current user's identity and effective roles."""
     enabled: bool
+    # none | header (reverse proxy) | oidc (built-in login; the UI shows "Sign out")
+    mode: str = "none"
     user: str | None = None
+    # Human-readable name from the identity provider (OIDC mode)
+    display_name: str | None = None
     groups: list[str] = Field(default_factory=list)
     is_admin: bool
     # Role on projects not listed in `projects` (none | viewer | developer | admin)

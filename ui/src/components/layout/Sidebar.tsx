@@ -1,5 +1,5 @@
 import { useAppContext } from '@/contexts/AppContext'
-import { useAuth } from '@/hooks/useProjects'
+import { useAuth, useLogout } from '@/hooks/useProjects'
 import { SidebarItem } from './SidebarItem'
 import { ProjectSelector } from '../ProjectSelector'
 import {
@@ -17,6 +17,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   UserRound,
+  LogOut,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
@@ -45,6 +46,7 @@ export function Sidebar() {
     setIsSpecCreating,
   } = useAppContext()
   const { auth, roleFor, canEdit } = useAuth()
+  const logoutMutation = useLogout()
   const editable = canEdit(selectedProject)
 
   const browserCount = wsState.browserScreenshots.size
@@ -214,9 +216,19 @@ export function Sidebar() {
           {/* Signed-in user (only when proxy auth is enabled) */}
           {auth.enabled && auth.user && (
             <UserBadge
-              user={auth.user}
+              user={auth.display_name || auth.user}
               role={selectedProject || auth.is_admin ? roleFor(selectedProject) : null}
               collapsed={sidebarCollapsed}
+            />
+          )}
+
+          {/* Sign out (built-in OIDC login only; a proxy owns its own logout) */}
+          {auth.mode === 'oidc' && auth.user && (
+            <UtilityButton
+              icon={LogOut}
+              label="Sign out"
+              collapsed={sidebarCollapsed}
+              onClick={() => logoutMutation.mutate()}
             />
           )}
 

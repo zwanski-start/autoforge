@@ -287,6 +287,16 @@ export function useAuth() {
   }
 }
 
+export function useLogout() {
+  return useMutation({
+    mutationFn: api.logout,
+    onSuccess: (result) => {
+      // Also end the identity provider session when it supports RP-initiated logout
+      window.location.href = result.end_session_url ?? '/'
+    },
+  })
+}
+
 export function useHealthCheck() {
   return useQuery({
     queryKey: ['health'],

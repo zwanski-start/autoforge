@@ -2,10 +2,19 @@
 # =============================
 # Location: ~/.autoforge/auth.yaml (override with AUTOFORGE_AUTH_CONFIG)
 #
-# Only used when AUTOFORGE_AUTH_MODE=header. AutoForge then trusts the
-# identity headers set by an authenticating reverse proxy (Authentik,
-# oauth2-proxy for Entra ID / Google / GitHub / Keycloak, Authelia, ...) and
-# maps users and groups onto roles defined here.
+# Used when AUTOFORGE_AUTH_MODE is "header" or "oidc":
+#   header - AutoForge trusts the identity headers set by an authenticating
+#            reverse proxy (Authentik, oauth2-proxy for Entra ID / Google /
+#            GitHub / Keycloak, Authelia, ...)
+#   oidc   - AutoForge signs users in itself with an OpenID Connect provider
+#            (Entra ID, Authentik, Keycloak, ...)
+# Either way, users and groups are mapped onto the roles defined here.
+#
+# OIDC mode: "users" entries match the preferred_username, email or sub
+# claim; "groups" entries match the values of AUTOFORGE_OIDC_GROUPS_CLAIM
+# (default: the "groups" and "roles" claims). For Entra ID, define App roles
+# on the app registration and list those role values here; the "groups"
+# claim only contains group object IDs.
 #
 # The file is reloaded automatically when it changes. If it is missing or
 # invalid, nobody gets access (fail closed) - check the server log.
@@ -31,7 +40,7 @@ admins:
   users:
     - alice@example.com
   groups:
-    - autoforge-admins          # Authentik group name, or Entra ID group object ID
+    - autoforge-admins          # Authentik group, Entra ID app role, or Entra ID group object ID
 
 # Per-project roles. "*" applies to every project.
 projects:

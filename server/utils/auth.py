@@ -4,20 +4,25 @@ Authentication & Role-Based Access Control
 
 Optional auth layer for exposing the UI on a LAN or behind a reverse proxy.
 
-AutoForge does not implement OAuth/OIDC flows itself. Instead it trusts the
-identity headers set by an authenticating reverse proxy ("forward auth"),
-which is how Authentik's proxy outpost, oauth2-proxy (Entra ID, Google,
-GitHub, Keycloak, ...), Authelia, Pomerium and Cloudflare Access all work.
-The proxy handles login/SSO; AutoForge maps the user and their groups onto
-roles defined in a YAML file and enforces them on every HTTP request and
-WebSocket handshake.
+Two ways to identify users:
+
+* ``header`` - trust the identity headers set by an authenticating reverse
+  proxy ("forward auth"), which is how Authentik's proxy outpost,
+  oauth2-proxy (Entra ID, Google, GitHub, Keycloak, ...), Authelia, Pomerium
+  and Cloudflare Access all work. The proxy handles login/SSO.
+* ``oidc`` - AutoForge signs users in itself with an OpenID Connect provider
+  (Entra ID, Authentik, Keycloak, ...) and keeps a server-side session,
+  so no proxy is needed (see ``server/utils/oidc.py``).
+
+Either way AutoForge maps the user and their groups onto roles defined in a
+YAML file and enforces them on every HTTP request and WebSocket handshake.
 
 Disabled by default (``AUTOFORGE_AUTH_MODE`` unset/``none``): behaviour is
 exactly as before.
 
 Environment variables:
 
-* ``AUTOFORGE_AUTH_MODE`` - ``none`` (default) or ``header``.
+* ``AUTOFORGE_AUTH_MODE`` - ``none`` (default), ``header`` or ``oidc``.
 * ``AUTOFORGE_AUTH_USER_HEADER`` - header carrying the username
   (default ``X-Forwarded-User``; Authentik: ``X-authentik-username``).
 * ``AUTOFORGE_AUTH_GROUPS_HEADER`` - header carrying the user's groups,
@@ -30,6 +35,21 @@ Environment variables:
   in ``X-AutoForge-Proxy-Secret``.
 * ``AUTOFORGE_AUTH_CONFIG`` - path to the roles file
   (default ``~/.autoforge/auth.yaml``). Reloaded automatically when it changes.
+
+OIDC mode only:
+
+* ``AUTOFORGE_OIDC_ISSUER`` / ``AUTOFORGE_OIDC_CLIENT_ID`` - required.
+* ``AUTOFORGE_OIDC_CLIENT_SECRET`` - optional (public client; PKCE is always used).
+* ``AUTOFORGE_OIDC_REDIRECT_URI`` - optional, defaults to ``<request base>/api/auth/callback``
+  (set it when behind a proxy that changes the scheme/host).
+* ``AUTOFORGE_OIDC_SCOPES`` - default ``openid profile email``.
+* ``AUTOFORGE_OIDC_GROUPS_CLAIM`` - comma-separated claims holding group/role
+  names (default ``groups,roles``: Authentik groups, Entra ID app roles).
+* ``AUTOFORGE_SESSION_TTL_HOURS`` - session lifetime (default 12).
+* ``AUTOFORGE_COOKIE_SECURE`` - ``auto`` (default: when served over https), ``true`` or ``false``.
+
+In OIDC mode, users match ``users:`` entries by ``preferred_username``,
+``email`` or ``sub``.
 
 Roles (lowest to highest): ``none`` < ``viewer`` < ``developer`` < ``admin``.
 
@@ -48,13 +68,18 @@ import json
 import logging
 import os
 import re
+import secrets
+import time
 from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import dataclass, field
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import yaml
+
+from .oidc import OIDCClient, OIDCConfig
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +105,9 @@ PROJECT_ROLES = (ROLE_VIEWER, ROLE_DEVELOPER)
 
 PROXY_SECRET_HEADER = "x-autoforge-proxy-secret"
 
+SESSION_COOKIE = "autoforge_session"
+LOGIN_PATH = "/api/auth/login"
+
 WS_CLOSE_UNAUTHORIZED = 4401
 WS_CLOSE_FORBIDDEN = 4403
 
@@ -103,10 +131,15 @@ class AuthSettings:
     trust_any_proxy: bool = False
     proxy_secret: str | None = None
     config_path: Path = DEFAULT_CONFIG_PATH
+    # OIDC mode
+    oidc: OIDCConfig | None = None
+    oidc_redirect_uri: str | None = None
+    session_ttl_seconds: int = 12 * 3600
+    cookie_secure: bool | None = None  # None = secure when the request is https
 
     @property
     def enabled(self) -> bool:
-        return self.mode == "header"
+        return self.mode in ("header", "oidc")
 
 
 def _parse_networks(value: str) -> tuple[tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...], bool]:
@@ -131,11 +164,38 @@ def load_auth_settings(env: MutableMapping[str, str] | None = None) -> AuthSetti
     env = os.environ if env is None else env
 
     mode = env.get("AUTOFORGE_AUTH_MODE", "none").strip().lower() or "none"
-    if mode not in ("none", "header"):
-        raise ValueError(f"Invalid AUTOFORGE_AUTH_MODE {mode!r} (expected 'none' or 'header')")
+    if mode not in ("none", "header", "oidc"):
+        raise ValueError(f"Invalid AUTOFORGE_AUTH_MODE {mode!r} (expected 'none', 'header' or 'oidc')")
 
     networks, trust_any = _parse_networks(env.get("AUTOFORGE_AUTH_TRUSTED_PROXIES", "127.0.0.1,::1"))
     config_path = env.get("AUTOFORGE_AUTH_CONFIG")
+
+    oidc: OIDCConfig | None = None
+    ttl_seconds = 12 * 3600
+    cookie_secure: bool | None = None
+    if mode == "oidc":
+        issuer = env.get("AUTOFORGE_OIDC_ISSUER", "").strip().rstrip("/")
+        client_id = env.get("AUTOFORGE_OIDC_CLIENT_ID", "").strip()
+        missing = [n for n, v in (("AUTOFORGE_OIDC_ISSUER", issuer), ("AUTOFORGE_OIDC_CLIENT_ID", client_id)) if not v]
+        if missing:
+            raise ValueError(f"AUTOFORGE_AUTH_MODE=oidc requires {', '.join(missing)}")
+        claims = env.get("AUTOFORGE_OIDC_GROUPS_CLAIM", "groups,roles")
+        oidc = OIDCConfig(
+            issuer=issuer,
+            client_id=client_id,
+            client_secret=env.get("AUTOFORGE_OIDC_CLIENT_SECRET") or None,
+            scopes=env.get("AUTOFORGE_OIDC_SCOPES", "").strip() or "openid profile email",
+            roles_claims=tuple(c.strip() for c in claims.split(",") if c.strip()),
+        )
+        try:
+            ttl_hours = float(env.get("AUTOFORGE_SESSION_TTL_HOURS", "12") or "12")
+        except ValueError:
+            raise ValueError("AUTOFORGE_SESSION_TTL_HOURS must be a number")
+        if ttl_hours <= 0:
+            raise ValueError("AUTOFORGE_SESSION_TTL_HOURS must be positive")
+        ttl_seconds = int(ttl_hours * 3600)
+        secure = env.get("AUTOFORGE_COOKIE_SECURE", "auto").strip().lower()
+        cookie_secure = None if secure in ("", "auto") else secure in ("1", "true", "yes")
 
     return AuthSettings(
         mode=mode,
@@ -145,6 +205,10 @@ def load_auth_settings(env: MutableMapping[str, str] | None = None) -> AuthSetti
         trust_any_proxy=trust_any,
         proxy_secret=env.get("AUTOFORGE_AUTH_PROXY_SECRET") or None,
         config_path=Path(config_path).expanduser() if config_path else DEFAULT_CONFIG_PATH,
+        oidc=oidc,
+        oidc_redirect_uri=env.get("AUTOFORGE_OIDC_REDIRECT_URI") or None,
+        session_ttl_seconds=ttl_seconds,
+        cookie_secure=cookie_secure,
     )
 
 
@@ -160,7 +224,7 @@ class Principals:
     groups: frozenset[str] = frozenset()
 
     def matches(self, user: AuthUser) -> bool:
-        if user.name.lower() in self.users:
+        if any(n.lower() in self.users for n in (user.name, *user.aliases)):
             return True
         return any(g.lower() in self.groups for g in user.groups)
 
@@ -268,10 +332,85 @@ class RoleConfigStore:
 
 @dataclass(frozen=True)
 class AuthUser:
-    """An authenticated user as reported by the proxy."""
+    """An authenticated user (from proxy headers or an OIDC login)."""
 
     name: str
     groups: tuple[str, ...] = ()
+    # Other identifiers that ``users:`` entries may match (OIDC: email, sub)
+    aliases: tuple[str, ...] = ()
+    display_name: str | None = None
+
+
+def user_from_claims(claims: dict[str, Any], groups_claims: tuple[str, ...]) -> AuthUser:
+    """Build an AuthUser from OIDC ID token / userinfo claims."""
+    sub = str(claims["sub"])
+    email = claims.get("email")
+    username = claims.get("preferred_username") or claims.get("upn") or email or sub
+
+    groups: list[str] = []
+    for claim in groups_claims:
+        value = claims.get(claim)
+        if isinstance(value, str):
+            groups.append(value)
+        elif isinstance(value, list):
+            groups.extend(str(v) for v in value if isinstance(v, (str, int)))
+
+    aliases = tuple(dict.fromkeys(str(a) for a in (email, sub) if a and a != username))
+    return AuthUser(
+        name=str(username),
+        groups=tuple(dict.fromkeys(groups)),
+        aliases=aliases,
+        display_name=claims.get("name"),
+    )
+
+
+class SessionStore:
+    """In-memory OIDC sessions keyed by an opaque random cookie value.
+
+    Server-side so logout revokes immediately; a restart signs everyone out.
+    """
+
+    def __init__(self, ttl_seconds: int) -> None:
+        self.ttl_seconds = ttl_seconds
+        self._sessions: dict[str, tuple[AuthUser, float]] = {}
+
+    def create(self, user: AuthUser) -> str:
+        now = time.time()
+        for token in [t for t, (_, exp) in self._sessions.items() if exp < now]:
+            del self._sessions[token]
+        token = secrets.token_urlsafe(32)
+        self._sessions[token] = (user, now + self.ttl_seconds)
+        return token
+
+    def get(self, token: str | None) -> AuthUser | None:
+        if not token:
+            return None
+        entry = self._sessions.get(token)
+        if entry is None:
+            return None
+        user, expires = entry
+        if expires < time.time():
+            self._sessions.pop(token, None)
+            return None
+        return user
+
+    def delete(self, token: str | None) -> None:
+        if token:
+            self._sessions.pop(token, None)
+
+
+def session_token(headers: dict[str, str]) -> str | None:
+    """Extract the session cookie value from lowercase request headers."""
+    raw = headers.get("cookie")
+    if not raw:
+        return None
+    cookie: SimpleCookie = SimpleCookie()
+    try:
+        cookie.load(raw)
+    except Exception:
+        return None
+    morsel = cookie.get(SESSION_COOKIE)
+    return morsel.value if morsel is not None and morsel.value else None
 
 
 def is_admin(user: AuthUser, config: RoleConfig) -> bool:
@@ -322,6 +461,10 @@ _ADMIN_ONLY_PREFIXES = (
 
 # Routes reachable without authentication (e.g. proxy health checks).
 _PUBLIC_PATHS = frozenset({"/api/health"})
+
+# Additionally public in OIDC mode: the login flow itself, and /me so the UI
+# can tell "signed out" apart from "no access".
+_OIDC_PUBLIC_PATHS = frozenset({"/api/auth/login", "/api/auth/callback", "/api/auth/logout", "/api/auth/me"})
 
 
 @dataclass(frozen=True)
@@ -405,13 +548,29 @@ def get_request_user(request: Any) -> AuthUser | None:
 
 _settings: AuthSettings = AuthSettings()
 _store: RoleConfigStore | None = None
+_oidc_client: OIDCClient | None = None
+_sessions: SessionStore | None = None
 
 
-def configure(settings: AuthSettings) -> None:
-    """Install settings for the running server."""
-    global _settings, _store
+def configure(settings: AuthSettings, oidc_client: OIDCClient | None = None) -> None:
+    """Install settings for the running server (``oidc_client`` is for tests)."""
+    global _settings, _store, _oidc_client, _sessions
     _settings = settings
     _store = RoleConfigStore(settings.config_path) if settings.enabled else None
+    if settings.mode == "oidc" and settings.oidc is not None:
+        _oidc_client = oidc_client or OIDCClient(settings.oidc)
+        _sessions = SessionStore(settings.session_ttl_seconds)
+    else:
+        _oidc_client = None
+        _sessions = None
+
+
+def get_oidc_client() -> OIDCClient | None:
+    return _oidc_client
+
+
+def get_sessions() -> SessionStore | None:
+    return _sessions
 
 
 def get_settings() -> AuthSettings:
@@ -441,7 +600,7 @@ def can_view_project(request: Any, project: str) -> bool:
 # ============================================================================
 
 class AuthMiddleware:
-    """Pure-ASGI middleware enforcing header auth and roles on HTTP and WebSocket."""
+    """Pure-ASGI middleware enforcing login and roles on HTTP and WebSocket."""
 
     def __init__(self, app: Any, settings: AuthSettings, store: RoleConfigStore) -> None:
         self.app = app
@@ -465,35 +624,20 @@ class AuthMiddleware:
         for name, value in scope.get("headers", []):
             headers[name.decode("latin-1").lower()] = value.decode("latin-1")
 
-        client = scope.get("client")
-        client_host = client[0] if client else None
+        if self.settings.mode == "oidc":
+            user = await self._oidc_user(scope, receive, send, path, method, headers)
+        else:
+            user = await self._header_user(scope, receive, send, headers)
+        if user is None:
+            return  # already denied / redirected
 
-        if not _client_trusted(self.settings, client_host):
-            await self._deny(scope, receive, send, 403, (
-                "Request did not come from a trusted auth proxy. Add the proxy address to "
-                "AUTOFORGE_AUTH_TRUSTED_PROXIES (or configure AUTOFORGE_AUTH_PROXY_SECRET)."
-            ))
-            return
-
-        if self.settings.proxy_secret is not None:
-            provided = headers.get(PROXY_SECRET_HEADER, "")
-            if not hmac.compare_digest(provided.encode(), self.settings.proxy_secret.encode()):
-                await self._deny(scope, receive, send, 403, "Invalid or missing proxy secret")
-                return
-
-        username = headers.get(self.settings.user_header, "").strip()
-        if not username:
-            await self._deny(scope, receive, send, 401, "Not authenticated")
-            return
-
-        # CSRF: the proxy authenticates via cookies, so reject cross-site writes.
+        # CSRF: auth rides on cookies (ours or the proxy's), so reject cross-site writes.
         if scope_type == "http" and method not in SAFE_METHODS:
             origin = headers.get("origin")
             if origin and _hostname(origin) != _hostname(headers.get("host", "")):
                 await self._deny(scope, receive, send, 403, "Cross-origin request rejected")
                 return
 
-        user = AuthUser(name=username, groups=_split_groups(headers.get(self.settings.groups_header, "")))
         config = self.store.get()
         req = required_permission(scope_type, method, path)
 
@@ -513,8 +657,71 @@ class AuthMiddleware:
         scope.setdefault("state", {})["auth_user"] = user
         await self.app(scope, receive, send)
 
+    async def _oidc_user(
+        self, scope: Scope, receive: Receive, send: Send, path: str, method: str, headers: dict[str, str],
+    ) -> AuthUser | None:
+        """Resolve the user from the session cookie; redirect or deny when signed out."""
+        sessions = get_sessions()
+        user = sessions.get(session_token(headers)) if sessions is not None else None
+
+        if path in _OIDC_PUBLIC_PATHS:
+            # Login flow and /me: pass through, exposing the user if signed in
+            scope.setdefault("state", {})["auth_user"] = user
+            await self.app(scope, receive, send)
+            return None
+
+        if user is not None:
+            return user
+
+        is_page = scope["type"] == "http" and method == "GET" and not path.startswith(("/api/", "/ws/"))
+        if is_page:
+            # Browser navigation to the SPA: send it through the login first
+            target = path + (f"?{scope['query_string'].decode('latin-1')}" if scope.get("query_string") else "")
+            await send({
+                "type": "http.response.start",
+                "status": 302,
+                "headers": [
+                    (b"location", f"{LOGIN_PATH}?next={quote(target, safe='')}".encode("latin-1")),
+                    (b"content-length", b"0"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return None
+
+        await self._deny(scope, receive, send, 401, "Not authenticated", login_url=LOGIN_PATH)
+        return None
+
+    async def _header_user(
+        self, scope: Scope, receive: Receive, send: Send, headers: dict[str, str],
+    ) -> AuthUser | None:
+        """Resolve the user from trusted reverse-proxy headers."""
+        client = scope.get("client")
+        client_host = client[0] if client else None
+
+        if not _client_trusted(self.settings, client_host):
+            await self._deny(scope, receive, send, 403, (
+                "Request did not come from a trusted auth proxy. Add the proxy address to "
+                "AUTOFORGE_AUTH_TRUSTED_PROXIES (or configure AUTOFORGE_AUTH_PROXY_SECRET)."
+            ))
+            return None
+
+        if self.settings.proxy_secret is not None:
+            provided = headers.get(PROXY_SECRET_HEADER, "")
+            if not hmac.compare_digest(provided.encode(), self.settings.proxy_secret.encode()):
+                await self._deny(scope, receive, send, 403, "Invalid or missing proxy secret")
+                return None
+
+        username = headers.get(self.settings.user_header, "").strip()
+        if not username:
+            await self._deny(scope, receive, send, 401, "Not authenticated")
+            return None
+
+        return AuthUser(name=username, groups=_split_groups(headers.get(self.settings.groups_header, "")))
+
     @staticmethod
-    async def _deny(scope: Scope, receive: Receive, send: Send, status: int, detail: str) -> None:
+    async def _deny(
+        scope: Scope, receive: Receive, send: Send, status: int, detail: str, login_url: str | None = None,
+    ) -> None:
         if scope["type"] == "websocket":
             message = await receive()
             if message["type"] == "websocket.connect":
@@ -522,7 +729,10 @@ class AuthMiddleware:
                 await send({"type": "websocket.close", "code": code})
             return
 
-        body = json.dumps({"detail": detail}).encode()
+        payload: dict[str, str] = {"detail": detail}
+        if login_url:
+            payload["login_url"] = login_url
+        body = json.dumps(payload).encode()
         await send({
             "type": "http.response.start",
             "status": status,

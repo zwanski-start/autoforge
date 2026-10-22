@@ -260,7 +260,12 @@ Commands not in the allowlist are blocked by the security hook.
 
 ### Authentication & Roles (LAN / Remote Access)
 
-By default the UI only listens on localhost and has no login. When exposing it to other people (`--host 0.0.0.0`), put it behind an authenticating reverse proxy and enable **proxy-header auth**. AutoForge does not run OAuth itself; the proxy handles SSO (Authentik, oauth2-proxy with Entra ID / Google / GitHub / Keycloak, Authelia, Pomerium, ...) and passes the user and their groups in HTTP headers. AutoForge maps those to roles per project:
+By default the UI only listens on localhost and has no login. When exposing it to other people (`--host 0.0.0.0`), turn on one of two auth modes:
+
+- **Built-in OIDC login** (`AUTOFORGE_AUTH_MODE=oidc`): AutoForge signs people in directly with Microsoft Entra ID, Authentik, Keycloak or any other OpenID Connect provider. No proxy needed.
+- **Proxy-header auth** (`AUTOFORGE_AUTH_MODE=header`): an authenticating reverse proxy you already run (Authentik outpost, oauth2-proxy, Authelia, Pomerium, ...) handles SSO and passes the user and their groups in HTTP headers.
+
+Either way, AutoForge maps users and groups to roles per project:
 
 | Role | Access |
 |------|--------|
@@ -268,7 +273,35 @@ By default the UI only listens on localhost and has no login. When exposing it t
 | `developer` | Full project control: agent, features, terminal, dev server, chats, schedules, prompts |
 | `admin` | Everything, plus global settings, the server folder browser, creating/deleting projects |
 
-1. Copy [`examples/auth.yaml`](examples/auth.yaml) to `~/.autoforge/auth.yaml` and list your admins, groups and projects.
+Users only see projects they have a role on. Start by copying [`examples/auth.yaml`](examples/auth.yaml) to `~/.autoforge/auth.yaml` and listing your admins, groups and projects. The file is reloaded when it changes.
+
+#### Built-in OIDC login
+
+1. Register AutoForge as a web application with your identity provider. Use the redirect URI `http(s)://<your-host>:<port>/api/auth/callback`.
+   - **Entra ID**: App registrations → New registration → Web platform. Add App roles (e.g. `autoforge-admins`, `my-app-devs`) and assign them to users or groups; they arrive in the `roles` claim.
+   - **Authentik**: create an OAuth2/OpenID provider and application. Group names arrive in the `groups` claim.
+2. Set environment variables (e.g. in `~/.autoforge/.env` or `.env`):
+
+   ```bash
+   AUTOFORGE_AUTH_MODE=oidc
+   AUTOFORGE_ALLOW_REMOTE=1          # when serving other machines (set by --host)
+   AUTOFORGE_OIDC_ISSUER=https://login.microsoftonline.com/<tenant-id>/v2.0
+   # Authentik: https://authentik.example.com/application/o/<app-slug>/
+   AUTOFORGE_OIDC_CLIENT_ID=<client id>
+   AUTOFORGE_OIDC_CLIENT_SECRET=<client secret>   # omit for a public client (PKCE is always used)
+   # Optional:
+   # AUTOFORGE_OIDC_REDIRECT_URI=https://autoforge.example.com/api/auth/callback   # behind a proxy / TLS terminator
+   # AUTOFORGE_OIDC_GROUPS_CLAIM=groups,roles
+   # AUTOFORGE_OIDC_SCOPES=openid profile email
+   # AUTOFORGE_SESSION_TTL_HOURS=12
+   # AUTOFORGE_COOKIE_SECURE=auto      # auto (https only) | true | false
+   ```
+
+Opening the UI redirects you to the provider. Afterwards a "Sign out" entry appears in the sidebar. Sessions are kept in server memory, so restarting AutoForge signs everyone out. In `auth.yaml`, `users:` entries match the `preferred_username`, `email` or `sub` claim.
+
+#### Proxy-header auth
+
+1. Configure your proxy to authenticate users and forward their identity headers.
 2. Set environment variables (e.g. in `~/.autoforge/.env` or `.env`):
 
    ```bash
