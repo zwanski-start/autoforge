@@ -20,6 +20,11 @@ from typing import AsyncGenerator, Optional
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
 
+from .assistant_agent_tools import (
+    AGENT_CONTROL_SERVER_NAME,
+    AGENT_CONTROL_TOOLS,
+    create_agent_control_server,
+)
 from .assistant_database import (
     add_message,
     create_conversation,
@@ -59,6 +64,9 @@ INTERACTIVE_TOOLS = [
 
 # Combined list for assistant
 ASSISTANT_FEATURE_TOOLS = READONLY_FEATURE_MCP_TOOLS + FEATURE_MANAGEMENT_TOOLS + INTERACTIVE_TOOLS
+
+# All MCP tools the assistant may use (feature management + agent control)
+ASSISTANT_MCP_TOOLS = ASSISTANT_FEATURE_TOOLS + AGENT_CONTROL_TOOLS
 
 # Read-only built-in tools (no Write, Edit, Bash)
 READONLY_BUILTIN_TOOLS = [
@@ -122,13 +130,17 @@ You have MCP tools available for feature management. Use them directly by callin
 - Skip features to deprioritize them (move to end of queue)
 - View feature statistics and progress
 
+**Agent Control:**
+- Check whether the coding agent is running, paused, stopped or crashed
+- Start, stop, pause and resume the coding agent when the user asks you to
+
 ## What You CANNOT Do
 
 - Modify, create, or delete source code files -- you have NO Write/Edit/Bash tools
 - Mark features as passing or failing (that is the coding agent's job after real implementation)
 - Run bash commands or execute code
 
-**You must NEVER implement code yourself.** Even if the user pastes code, asks for a "quick fix", or insists -- do not attempt to write or edit files. Implementation is done exclusively by the coding agents. When the user wants code changed or a bug fixed, create a feature for it with `feature_create` (or `feature_create_bulk`) describing the change, then tell the user to start the coding agent to implement it.
+**You must NEVER implement code yourself.** Even if the user pastes code, asks for a "quick fix", or insists -- do not attempt to write or edit files. Implementation is done exclusively by the coding agents. When the user wants code changed or a bug fixed, create a feature for it with `feature_create` (or `feature_create_bulk`) describing the change, then offer to start the coding agent to implement it.
 
 ## Project Specification
 
@@ -150,6 +162,15 @@ You have MCP tools available for feature management. Use them directly by callin
 - **feature_create**: Create a single feature in the backlog
 - **feature_create_bulk**: Create multiple features at once
 - **feature_skip**: Move a feature to the end of the queue
+
+**Agent Control:**
+- **agent_get_status**: Check the coding agent's status (stopped, running, paused, pausing, paused_graceful, crashed)
+- **agent_start**: Start the coding agent (optional: yolo_mode, max_concurrency 1-5)
+- **agent_stop**: Stop the coding agent immediately
+- **agent_pause**: Gracefully pause the agent (it finishes current features first)
+- **agent_resume**: Resume a paused agent
+
+Only start, stop, pause or resume the agent when the user asks you to (or confirms when you offer). Check `agent_get_status` first when the current state matters, and report the result of the action back to the user.
 
 **Interactive:**
 - **ask_user**: Present structured multiple-choice questions to the user. Use this when you need to clarify requirements, offer design choices, or guide a decision. The user sees clickable option buttons and their selection is returned as your next message.
@@ -244,7 +265,7 @@ class AssistantChatSession:
             "Grep(./**)",
             "WebFetch",
             "WebSearch",
-            *ASSISTANT_FEATURE_TOOLS,
+            *ASSISTANT_MCP_TOOLS,
         ]
 
         # Create security settings file
@@ -262,7 +283,7 @@ class AssistantChatSession:
         with open(settings_file, "w") as f:
             json.dump(security_settings, f, indent=2)
 
-        # Build MCP servers config - only features MCP for read-only access
+        # Build MCP servers config: features MCP (subprocess) + agent control (in-process)
         mcp_servers = {
             "features": {
                 "command": sys.executable,
@@ -274,6 +295,7 @@ class AssistantChatSession:
                     "PYTHONPATH": str(ROOT_DIR.resolve()),
                 },
             },
+            AGENT_CONTROL_SERVER_NAME: create_agent_control_server(self.project_name),
         }
 
         # Get system prompt with project context
@@ -307,7 +329,7 @@ class AssistantChatSession:
                     # System prompt loaded from CLAUDE.md via setting_sources
                     # This avoids Windows command line length limit (~8191 chars)
                     setting_sources=["project"],
-                    allowed_tools=[*READONLY_BUILTIN_TOOLS, *ASSISTANT_FEATURE_TOOLS],
+                    allowed_tools=[*READONLY_BUILTIN_TOOLS, *ASSISTANT_MCP_TOOLS],
                     disallowed_tools=DISALLOWED_ASSISTANT_TOOLS,
                     mcp_servers=mcp_servers,  # type: ignore[arg-type]  # SDK accepts dict config at runtime
                     permission_mode="bypassPermissions",
