@@ -573,6 +573,13 @@ class SettingsUpdate(BaseModel):
     api_model: str | None = Field(None, max_length=200)
     maturity_order: list[Maturity] | None = None  # Scheduling order, first = highest
 
+    @field_validator('maturity_order', mode='before')
+    @classmethod
+    def normalize_maturity_order(cls, v):
+        if isinstance(v, list):
+            return [_normalize_maturity_value(item) for item in v]
+        return v
+
     @field_validator('maturity_order')
     @classmethod
     def validate_maturity_order(cls, v: list[str] | None) -> list[str] | None:

@@ -300,3 +300,17 @@ class TestRestApi:
         assert "Backlog" in claim["error"]
         assert "Backlog" in mark["error"]
         assert ready["total_ready"] == 0
+
+
+class TestSettingsSchema:
+    def test_maturity_order_normalized_and_validated(self):
+        from pydantic import ValidationError
+
+        from server.schemas import SettingsUpdate
+
+        update = SettingsUpdate(maturity_order=["Limited Beta", "alpha", "BETA"])
+        assert update.maturity_order == ["limited_beta", "alpha", "beta"]
+        with pytest.raises(ValidationError):
+            SettingsUpdate(maturity_order=["alpha", "alpha", "beta"])
+        with pytest.raises(ValidationError):
+            SettingsUpdate(maturity_order=["alpha", "gamma", "beta"])
