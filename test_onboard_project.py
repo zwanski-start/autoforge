@@ -60,6 +60,8 @@ class TestParseCreatedCount(unittest.TestCase):
     def test_parses_text_blocks_and_strings(self):
         assert _parse_created_count([{"type": "text", "text": '{"created": 4, "with_dependencies": 0}'}]) == 4
         assert _parse_created_count('{"created": 2}') == 2
+        wrapped = json.dumps({"result": json.dumps({"created": 10, "with_dependencies": 9})})
+        assert _parse_created_count([{"type": "text", "text": wrapped}]) == 10
 
     def test_handles_errors_and_garbage(self):
         assert _parse_created_count('{"error": "boom"}') == 0

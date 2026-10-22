@@ -465,6 +465,9 @@ def _parse_created_count(content: Any) -> int:
         return 0
     try:
         data = json.loads(content)
+        # MCP tool results may arrive wrapped as {"result": "<tool JSON>"}
+        if isinstance(data, dict) and isinstance(data.get("result"), str):
+            data = json.loads(data["result"])
     except ValueError:
         return 0
     created = data.get("created") if isinstance(data, dict) else None
