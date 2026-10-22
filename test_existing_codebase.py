@@ -98,3 +98,167 @@ class TestScaffoldExistingCodebase:
         initializer.write_text("my custom prompt", encoding="utf-8")
         scaffold_project_prompts(tmp_path, existing_codebase=True)
         assert self._initializer(tmp_path) == "my custom prompt"
+
+
+class TestClaudeMdGuard:
+    """Chat sessions must never destroy a CLAUDE.md the user already had."""
+
+    def test_backup_and_restore(self, tmp_path):
+        from server.services.claude_md_guard import (
+            get_claude_md_backup_path,
+            release_session_claude_md,
+            write_session_claude_md,
+        )
+
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text("# my repo rules", encoding="utf-8")
+
+        write_session_claude_md(tmp_path, "session prompt")
+        assert claude_md.read_text(encoding="utf-8") == "session prompt"
+        assert get_claude_md_backup_path(tmp_path).read_text(encoding="utf-8") == "# my repo rules"
+
+        release_session_claude_md(tmp_path)
+        assert claude_md.read_text(encoding="utf-8") == "# my repo rules"
+        assert not get_claude_md_backup_path(tmp_path).exists()
+
+    def test_overlapping_sessions_restore_after_last_release(self, tmp_path):
+        from server.services.claude_md_guard import release_session_claude_md, write_session_claude_md
+
+        claude_md = tmp_path / "CLAUDE.md"
+        claude_md.write_text("# my repo rules", encoding="utf-8")
+
+        write_session_claude_md(tmp_path, "spec prompt")
+        write_session_claude_md(tmp_path, "assistant prompt")
+        release_session_claude_md(tmp_path)
+        assert claude_md.read_text(encoding="utf-8") == "assistant prompt"
+        release_session_claude_md(tmp_path)
+        assert claude_md.read_text(encoding="utf-8") == "# my repo rules"
+
+    def test_no_user_file_leaves_no_backup(self, tmp_path):
+        from server.services.claude_md_guard import (
+            get_claude_md_backup_path,
+            release_session_claude_md,
+            write_session_claude_md,
+        )
+
+        write_session_claude_md(tmp_path, "session prompt")
+        release_session_claude_md(tmp_path)
+        assert not get_claude_md_backup_path(tmp_path).exists()
+        # Unmatched release is a no-op
+        release_session_claude_md(tmp_path)
+
+    def test_leftover_backup_from_crash_is_not_clobbered(self, tmp_path):
+        from server.services.claude_md_guard import (
+            get_claude_md_backup_path,
+            release_session_claude_md,
+            write_session_claude_md,
+        )
+
+        backup = get_claude_md_backup_path(tmp_path)
+        backup.parent.mkdir(parents=True)
+        backup.write_text("# my repo rules", encoding="utf-8")
+        # CLAUDE.md still holds a prompt from a session that crashed
+        (tmp_path / "CLAUDE.md").write_text("stale prompt", encoding="utf-8")
+
+        write_session_claude_md(tmp_path, "new prompt")
+        assert backup.read_text(encoding="utf-8") == "# my repo rules"
+        release_session_claude_md(tmp_path)
+        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "# my repo rules"
+
+
+class _FakeClaudeClient:
+    """Stand-in for ClaudeSDKClient that records the CLAUDE.md it would load."""
+
+    seen_claude_md: list[str] = []
+
+    def __init__(self, options=None):
+        self.options = options
+
+    async def __aenter__(self):
+        cwd = Path(self.options.cwd)
+        _FakeClaudeClient.seen_claude_md.append((cwd / "CLAUDE.md").read_text(encoding="utf-8"))
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+
+@pytest.fixture
+def stub_sdk(monkeypatch):
+    import registry
+
+    monkeypatch.setattr(registry, "get_effective_sdk_env", lambda: {})
+    monkeypatch.setattr(registry, "get_effort_setting", lambda: "high")
+    _FakeClaudeClient.seen_claude_md = []
+    return _FakeClaudeClient
+
+
+def _drain(agen):
+    import asyncio
+
+    async def run():
+        return [chunk async for chunk in agen]
+
+    return asyncio.run(run())
+
+
+class TestChatSessionsPreserveClaudeMd:
+    def test_spec_session_restores_user_claude_md(self, tmp_path, monkeypatch, stub_sdk):
+        import asyncio
+
+        from server.services import spec_chat_session
+
+        monkeypatch.setattr(spec_chat_session, "ClaudeSDKClient", stub_sdk)
+
+        async def fake_query(self, message, attachments=None):
+            self.kickoff = message
+            if False:
+                yield {}
+
+        monkeypatch.setattr(spec_chat_session.SpecChatSession, "_query_claude", fake_query)
+
+        _write(tmp_path / "package.json", "{}")
+        (tmp_path / "CLAUDE.md").write_text("# my repo rules", encoding="utf-8")
+        scaffold_project_prompts(tmp_path, existing_codebase=True)
+
+        session = spec_chat_session.SpecChatSession("myapp", tmp_path)
+        _drain(session.start())
+
+        # During the session the CLI sees the create-spec prompt
+        assert "Spec Creation Assistant" in stub_sdk.seen_claude_md[0]
+        assert "EXISTING CODEBASE MODE" in session.kickoff
+
+        asyncio.run(session.close())
+        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "# my repo rules"
+
+    def test_spec_session_restores_on_client_init_failure(self, tmp_path, monkeypatch, stub_sdk):
+        from server.services import spec_chat_session
+
+        class FailingClient(stub_sdk):
+            async def __aenter__(self):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(spec_chat_session, "ClaudeSDKClient", FailingClient)
+        (tmp_path / "CLAUDE.md").write_text("# my repo rules", encoding="utf-8")
+        scaffold_project_prompts(tmp_path, existing_codebase=True)
+
+        session = spec_chat_session.SpecChatSession("myapp", tmp_path)
+        chunks = _drain(session.start())
+        assert chunks and chunks[-1]["type"] == "error"
+        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "# my repo rules"
+
+    def test_assistant_session_restores_user_claude_md(self, tmp_path, monkeypatch, stub_sdk):
+        import asyncio
+
+        from server.services import assistant_chat_session
+
+        monkeypatch.setattr(assistant_chat_session, "ClaudeSDKClient", stub_sdk)
+        (tmp_path / "CLAUDE.md").write_text("# my repo rules", encoding="utf-8")
+        scaffold_project_prompts(tmp_path, existing_codebase=True)
+
+        session = assistant_chat_session.AssistantChatSession("myapp", tmp_path)
+        _drain(session.start())
+        assert stub_sdk.seen_claude_md and stub_sdk.seen_claude_md[0] != "# my repo rules"
+
+        asyncio.run(session.close())
+        assert (tmp_path / "CLAUDE.md").read_text(encoding="utf-8") == "# my repo rules"

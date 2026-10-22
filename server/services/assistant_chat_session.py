@@ -31,6 +31,7 @@ from .chat_constants import (
     format_client_init_error,
     safe_receive_response,
 )
+from .claude_md_guard import release_session_claude_md, write_session_claude_md
 
 # Load environment variables from .env file if present
 load_dotenv()
@@ -208,6 +209,7 @@ class AssistantChatSession:
         self._client_entered: bool = False
         self.created_at = datetime.now()
         self._history_loaded: bool = False  # Track if we've loaded history for resumed conversations
+        self._owns_claude_md: bool = False  # Wrote CLAUDE.md via claude_md_guard
 
     async def close(self) -> None:
         """Clean up resources and close the Claude client."""
@@ -219,6 +221,13 @@ class AssistantChatSession:
             finally:
                 self._client_entered = False
                 self.client = None
+        self._release_claude_md()
+
+    def _release_claude_md(self) -> None:
+        """Restore the user's own CLAUDE.md once this session no longer needs it."""
+        if self._owns_claude_md:
+            self._owns_claude_md = False
+            release_session_claude_md(self.project_dir)
 
     async def start(self) -> AsyncGenerator[dict, None]:
         """
@@ -281,9 +290,10 @@ class AssistantChatSession:
 
         # Write system prompt to CLAUDE.md file to avoid Windows command line length limit
         # The SDK will read this via setting_sources=["project"]
+        # (backing up and later restoring a CLAUDE.md the user already had)
         claude_md_path = self.project_dir / "CLAUDE.md"
-        with open(claude_md_path, "w", encoding="utf-8") as f:
-            f.write(system_prompt)
+        write_session_claude_md(self.project_dir, system_prompt)
+        self._owns_claude_md = True
         logger.info(f"Wrote assistant system prompt to {claude_md_path}")
 
         # Use system Claude CLI
@@ -323,6 +333,7 @@ class AssistantChatSession:
             logger.info("Claude client ready")
         except Exception as e:
             logger.exception("Failed to create Claude client")
+            self._release_claude_md()
             yield {"type": "error", "content": format_client_init_error(e)}
             return
 
