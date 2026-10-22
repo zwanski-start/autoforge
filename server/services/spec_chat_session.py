@@ -121,6 +121,7 @@ class SpecChatSession:
                     "Write(./**)",
                     "Edit(./**)",
                     "Glob(./**)",
+                    "Grep(./**)",
                 ],
             },
         }
@@ -169,6 +170,7 @@ class SpecChatSession:
                         "Write",
                         "Edit",
                         "Glob",
+                        "Grep",
                         "WebFetch",
                         "WebSearch",
                     ],
@@ -191,8 +193,16 @@ class SpecChatSession:
             return
 
         # Start the conversation - Claude will send the Phase 1 greeting
+        # (or, for an existing codebase, analyze the code first)
+        from prompts import is_existing_codebase_project
+        kickoff = "Begin the spec creation process."
+        if is_existing_codebase_project(self.project_dir):
+            kickoff = (
+                "Begin the spec creation process in EXISTING CODEBASE MODE: "
+                "the project directory already contains code to build on."
+            )
         try:
-            async for chunk in self._query_claude("Begin the spec creation process."):
+            async for chunk in self._query_claude(kickoff):
                 yield chunk
             # Signal that the response is complete (for UI to hide loading indicator)
             yield {"type": "response_done"}
