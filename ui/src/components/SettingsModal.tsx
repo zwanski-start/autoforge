@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { Loader2, AlertCircle, AlertTriangle, Check, Moon, Sun, Eye, EyeOff, ShieldCheck } from 'lucide-react'
+import { Loader2, AlertCircle, AlertTriangle, Check, Moon, Sun, Eye, EyeOff, ShieldCheck, ArrowUp, ArrowDown } from 'lucide-react'
 import { useSettings, useUpdateSettings, useAvailableModels, useAvailableProviders } from '../hooks/useProjects'
 import { useTheme, THEMES } from '../hooks/useTheme'
-import type { EffortLevel, ProviderInfo } from '../lib/types'
+import type { EffortLevel, Maturity, ProviderInfo } from '../lib/types'
+import { DEFAULT_MATURITY_ORDER, MATURITY_LABELS } from '../lib/maturity'
 import {
   Dialog,
   DialogContent,
@@ -68,6 +69,15 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     if (!updateSettings.isPending) {
       updateSettings.mutate({ testing_batch_size: size })
     }
+  }
+
+  const handleMaturityMove = (index: number, direction: -1 | 1) => {
+    if (!settings || updateSettings.isPending) return
+    const order: Maturity[] = [...(settings.maturity_order ?? DEFAULT_MATURITY_ORDER)]
+    const target = index + direction
+    if (target < 0 || target >= order.length) return
+    ;[order[index], order[target]] = [order[target], order[index]]
+    updateSettings.mutate({ maturity_order: order })
   }
 
   const handleEffortChange = (level: EffortLevel) => {
@@ -488,6 +498,43 @@ export function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 onChange={handleTestingBatchSizeChange}
                 disabled={isSaving}
               />
+            </div>
+
+            {/* Maturity Priority */}
+            <div className="space-y-2">
+              <Label className="font-medium">Maturity Priority</Label>
+              <p className="text-sm text-muted-foreground">
+                Order in which agents pick up build-ready (Pending) features by maturity tag.
+                Unreviewed features go last. Applies the next time the agent starts.
+              </p>
+              <ol className="space-y-1" data-testid="maturity-order">
+                {(settings.maturity_order ?? DEFAULT_MATURITY_ORDER).map((level, index, order) => (
+                  <li key={level} className="flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm">
+                    <span className="font-mono text-xs text-muted-foreground w-4">{index + 1}</span>
+                    <span className="flex-1">{MATURITY_LABELS[level]}</span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => handleMaturityMove(index, -1)}
+                      disabled={isSaving || index === 0}
+                      aria-label={`Move ${MATURITY_LABELS[level]} up`}
+                    >
+                      <ArrowUp size={14} />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={() => handleMaturityMove(index, 1)}
+                      disabled={isSaving || index === order.length - 1}
+                      aria-label={`Move ${MATURITY_LABELS[level]} down`}
+                    >
+                      <ArrowDown size={14} />
+                    </Button>
+                  </li>
+                ))}
+              </ol>
             </div>
 
             {/* Update Error */}
