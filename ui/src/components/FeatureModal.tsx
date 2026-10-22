@@ -3,6 +3,7 @@ import { X, CheckCircle2, Circle, SkipForward, Trash2, Loader2, AlertCircle, Pen
 import { useSkipFeature, useDeleteFeature, useFeatures, useResolveHumanInput } from '../hooks/useProjects'
 import { EditFeatureForm } from './EditFeatureForm'
 import { HumanInputForm } from './HumanInputForm'
+import { FeatureEvidence } from './FeatureEvidence'
 import type { Feature } from '../lib/types'
 import {
   Dialog,
@@ -266,6 +267,13 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
               </ol>
             </div>
           )}
+
+          {/* Test Evidence recorded by agents */}
+          <FeatureEvidence
+            projectName={projectName}
+            featureId={feature.id}
+            evidenceCount={feature.evidence_count ?? 0}
+          />
         </div>
 
         {/* Actions */}
