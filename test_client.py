@@ -307,6 +307,24 @@ class TestCliStderrFilter(unittest.TestCase):
         lines = ["Error in hook callback hook_1: TypeError: boom", "    at x (y.js:1:1)", "plain line"]
         self.assertEqual(self._run(lines), lines)
 
+    def test_multiline_read_keeps_unrelated_lines(self):
+        # The SDK hands the callback raw pipe reads that can span many lines.
+        chunk = "\n".join(["REAL BEFORE", *self.ABORT_TRACE, "REAL AFTER"])
+        result = self._run([chunk])
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0], "REAL BEFORE")
+        self.assertIn("hook_0", result[1])
+        self.assertEqual(result[2], "REAL AFTER")
+
+    def test_multiline_read_with_two_aborts_gives_two_summaries(self):
+        trace = "\n".join(self.ABORT_TRACE)
+        chunk = f"REAL 1\n{trace}\nREAL 2\n{trace.replace('hook_0', 'hook_1')}\nREAL 3"
+        result = self._run([chunk])
+        self.assertEqual(result[0::2], ["REAL 1", "REAL 2", "REAL 3"])
+        self.assertIn("hook_0", result[1])
+        self.assertIn("hook_1", result[3])
+        self.assertEqual(len(result), 5)
+
 
 if __name__ == "__main__":
     unittest.main()

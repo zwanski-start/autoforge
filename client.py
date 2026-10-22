@@ -52,8 +52,14 @@ class CliStderrFilter:
         self._stream = stream
         self._in_abort_trace = False
 
-    def __call__(self, line: str) -> None:
-        line = line.rstrip("\n")
+    def __call__(self, text: str) -> None:
+        # The SDK passes raw (right-stripped) pipe reads, which can hold many
+        # lines, so filter line by line. Reads that end mid-line can't be
+        # detected (the SDK strips the trailing newline), so no carry-over.
+        for line in text.splitlines():
+            self._handle_line(line)
+
+    def _handle_line(self, line: str) -> None:
         match = _HOOK_ABORT_RE.search(line)
         if match:
             self._in_abort_trace = True
