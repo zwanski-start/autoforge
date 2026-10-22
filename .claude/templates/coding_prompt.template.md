@@ -149,7 +149,7 @@ Use the feature_mark_passing tool with feature_id=42
 If the project has quality gates enabled, `feature_mark_passing` first runs the project's
 lint and type checks. If it responds that quality gates failed, the feature was NOT marked
 passing: fix the reported errors and call it again. You can run the same checks earlier with
-`feature_verify_quality`.
+`feature_verify_quality` (it returns an error when quality gates are not enabled; that is fine, just continue).
 
 **NEVER:**
 

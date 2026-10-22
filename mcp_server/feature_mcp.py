@@ -255,7 +255,8 @@ def feature_mark_passing(
         JSON with success confirmation: {success, feature_id, name}, plus a
         quality_gates summary when quality gates are enabled.
     """
-    quality_config = load_quality_config(PROJECT_DIR)
+    # Settings come from the MCP server's environment only (never from project files)
+    quality_config = load_quality_config()
     quality_report = None
     if quality_config.enabled:
         session = get_session()
@@ -284,10 +285,10 @@ def feature_mark_passing(
         # Atomic update with state guard - prevents double-pass in parallel mode
         result = session.execute(text("""
             UPDATE features
-            SET passes = 1, in_progress = 0
+            SET passes = 1, in_progress = 0, failure_reason = NULL
             WHERE id = :id AND passes = 0
         """), {"id": feature_id})
-        if quality_report is not None:
+        if quality_report is not None and result.rowcount > 0:
             session.execute(
                 text("UPDATE features SET quality_result = :qr WHERE id = :id"),
                 {"id": feature_id, "qr": json.dumps(quality_report.to_dict())},
@@ -371,7 +372,8 @@ def feature_verify_quality(
     project's config files. Use this before feature_mark_passing to find and fix
     lint/type errors early. The result is stored on the feature as evidence.
 
-    Runs even if quality gates are not enabled in .autoforge/config.json.
+    Only available when quality gates are enabled for this AutoForge
+    installation; otherwise returns an error and runs nothing.
 
     Args:
         feature_id: The ID of the feature the checks are for
@@ -379,6 +381,11 @@ def feature_verify_quality(
     Returns:
         JSON with: passed (bool), message, checks (name, category, passed, output on failure)
     """
+    quality_config = load_quality_config()
+    if not quality_config.enabled:
+        # Checks run outside the Bash sandbox, so they need the user's opt-in
+        return json.dumps({"error": "Quality gates are not enabled for this project"})
+
     session = get_session()
     try:
         feature = session.query(Feature).filter(Feature.id == feature_id).first()
@@ -388,7 +395,7 @@ def feature_verify_quality(
         session.close()
 
     try:
-        report = run_quality_checks(PROJECT_DIR).to_dict()
+        report = run_quality_checks(PROJECT_DIR, quality_config).to_dict()
         _store_quality_result(feature_id, report)
     except Exception as e:
         return json.dumps({"error": f"Failed to run quality checks: {str(e)}"})

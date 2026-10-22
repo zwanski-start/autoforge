@@ -6,21 +6,27 @@ Auto-detects a project's linters and type checkers, runs them, and reports
 structured results. Used by the feature MCP server to verify code before a
 feature is marked as passing.
 
-Configuration lives in ``{project_dir}/.autoforge/config.json``::
+Quality gates are disabled by default. They are configured ONLY through
+environment variables of the AutoForge process (e.g. ``~/.autoforge/.env``),
+never through files inside the project, because the coding agent can write
+anything in the project directory and must not be able to turn the gates on
+(or weaken them)::
 
-    {
-      "quality_gates": {
-        "enabled": true,
-        "strict_mode": true,
-        "timeout_seconds": 120,
-        "checks": {"lint": true, "type_check": true}
-      }
-    }
+    AUTOFORGE_QUALITY_GATES=strict        # off (default) | strict (or 1/true/on) | warn
+    AUTOFORGE_QUALITY_GATES_TIMEOUT=120   # per-check timeout in seconds (max 600)
+    AUTOFORGE_QUALITY_GATES_CHECKS=lint,type_check
 
-Quality gates are disabled by default. When enabled with ``strict_mode`` (the
-default once enabled), ``feature_mark_passing`` refuses to mark a feature as
-passing while any check fails. With ``strict_mode: false`` the checks still
-run and are recorded, but failures are reported as warnings only.
+In ``strict`` mode ``feature_mark_passing`` refuses to mark a feature as
+passing while any check fails. In ``warn`` mode the checks still run and are
+recorded, but failures are reported as warnings only.
+
+SECURITY / TRUST: the checks run inside the feature MCP server process, which
+is NOT covered by the agent's Bash sandbox or the command allowlist in
+``security.py``. They execute project-local tooling and configuration that the
+agent can modify (``node_modules/.bin/*``, ``.venv``/``venv``,
+``eslint.config.js`` and similar). Enabling quality gates is therefore a trust
+decision: only enable them for projects whose contents you trust to run
+unsandboxed on your machine.
 
 Detected tools (only run when the project is configured for them):
 
@@ -111,45 +117,52 @@ class QualityReport:
         return asdict(self)
 
 
-def _config_path(project_dir: Path) -> Path:
-    return project_dir / ".autoforge" / "config.json"
+ENV_ENABLED = "AUTOFORGE_QUALITY_GATES"
+ENV_TIMEOUT = "AUTOFORGE_QUALITY_GATES_TIMEOUT"
+ENV_CHECKS = "AUTOFORGE_QUALITY_GATES_CHECKS"
+
+# Environment variables forwarded to the feature MCP server (see client.py)
+QUALITY_GATE_ENV_VARS = (ENV_ENABLED, ENV_TIMEOUT, ENV_CHECKS)
+
+_STRICT_VALUES = {"1", "true", "yes", "on", "strict"}
+_WARN_VALUES = {"warn", "warning"}
 
 
-def load_config(project_dir: Path) -> QualityGateConfig:
-    """Load quality gate settings from ``.autoforge/config.json``.
+def load_config(env: dict[str, str] | None = None) -> QualityGateConfig:
+    """Load quality gate settings from environment variables.
 
-    Missing or malformed config falls back to defaults (disabled).
+    Deliberately ignores any file in the project directory: the agent can
+    write there, and enabling the gates runs project tooling unsandboxed.
+    Unknown or malformed values fall back to safe defaults (disabled).
     """
+    if env is None:
+        env = dict(os.environ)
     config = QualityGateConfig()
-    path = _config_path(project_dir)
-    if not path.is_file():
-        return config
 
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
-        print(f"[quality_gates] Ignoring unreadable {path}: {e}", file=sys.stderr)
-        return config
+    mode = env.get(ENV_ENABLED, "").strip().lower()
+    if mode in _STRICT_VALUES:
+        config.enabled = True
+        config.strict_mode = True
+    elif mode in _WARN_VALUES:
+        config.enabled = True
+        config.strict_mode = False
+    elif mode not in ("", "0", "false", "no", "off"):
+        print(f"[quality_gates] Ignoring unknown {ENV_ENABLED}={mode!r}; gates disabled", file=sys.stderr)
 
-    section = data.get("quality_gates") if isinstance(data, dict) else None
-    if not isinstance(section, dict):
-        return config
+    timeout = env.get(ENV_TIMEOUT, "").strip()
+    if timeout:
+        try:
+            value = int(timeout)
+        except ValueError:
+            value = 0
+        if value > 0:
+            config.timeout_seconds = min(value, MAX_TIMEOUT_SECONDS)
 
-    if isinstance(section.get("enabled"), bool):
-        config.enabled = section["enabled"]
-    if isinstance(section.get("strict_mode"), bool):
-        config.strict_mode = section["strict_mode"]
-
-    timeout = section.get("timeout_seconds")
-    if isinstance(timeout, int) and not isinstance(timeout, bool) and timeout > 0:
-        config.timeout_seconds = min(timeout, MAX_TIMEOUT_SECONDS)
-
-    checks = section.get("checks")
-    if isinstance(checks, dict):
-        if isinstance(checks.get("lint"), bool):
-            config.lint = checks["lint"]
-        if isinstance(checks.get("type_check"), bool):
-            config.type_check = checks["type_check"]
+    checks = env.get(ENV_CHECKS)
+    if checks is not None and checks.strip():
+        names = {c.strip().lower().replace("-", "_") for c in checks.split(",")}
+        config.lint = "lint" in names
+        config.type_check = "type_check" in names
 
     return config
 
@@ -211,7 +224,7 @@ def detect_checks(project_dir: Path, config: QualityGateConfig | None = None) ->
     # Absolute paths: the commands run with cwd=project_dir
     project_dir = project_dir.resolve()
     if config is None:
-        config = load_config(project_dir)
+        config = load_config()
 
     checks: list[QualityCheck] = []
     pkg = _package_json(project_dir)
@@ -340,7 +353,16 @@ def run_quality_checks(project_dir: Path, config: QualityGateConfig | None = Non
     """Detect and run all applicable quality checks for a project."""
     project_dir = project_dir.resolve()
     if config is None:
-        config = load_config(project_dir)
+        config = load_config()
+
+    # Defense in depth: never execute project tooling unless the trusted switch is on
+    if not config.enabled:
+        return QualityReport(
+            passed=True,
+            strict_mode=config.strict_mode,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            message="Quality gates are disabled; nothing was run",
+        )
 
     checks = detect_checks(project_dir, config)
     results = [run_check(c, project_dir, config.timeout_seconds) for c in checks]
