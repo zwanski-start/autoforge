@@ -154,6 +154,42 @@ class TestCliStderrFilter(unittest.TestCase):
         lines = ["Error in hook callback hook_0: Error: boom", "    at x (y.js:1:1)"]
         self.assertEqual(self._run(lines), lines)
 
+    # The SDK delivers raw pipe chunks (rstripped), not single lines.
+
+    def test_chunk_with_real_error_after_abort_trace(self):
+        chunk = (
+            "Error in hook callback hook_0: VJ [AbortError]\n"
+            "    at AbortSignal.Y (file:///x/cli.js:4930:315)\n"
+            "    at runAbort (node:internal/abort_controller:488:10)\n"
+            "Some real error\n"
+            "    at foo (bar.js:1:1)"
+        )
+        self.assertEqual(self._run([chunk]), ["Some real error", "    at foo (bar.js:1:1)"])
+
+    def test_chunk_with_real_error_before_abort_trace(self):
+        chunk = (
+            "Real problem: ENOSPC\n"
+            "Error in hook callback hook_1: VJ [AbortError]\n"
+            "    at AbortSignal.Y (file:///x/cli.js:4930:315)"
+        )
+        self.assertEqual(self._run([chunk]), ["Real problem: ENOSPC"])
+
+    def test_chunk_with_only_abort_trace_is_suppressed(self):
+        chunk = (
+            "Error in hook callback hook_0: VJ [AbortError]\n"
+            "    at AbortSignal.Y (file:///x/cli.js:4930:315)\n"
+            "    at [nodejs.internal.kHybridDispatch] (node:internal/event_target:845:20)\n"
+            "    at runAbort (node:internal/abort_controller:488:10)"
+        )
+        self.assertEqual(self._run([chunk]), [])
+
+    def test_abort_trace_frames_continue_in_next_chunk(self):
+        chunks = [
+            "Error in hook callback hook_0: VJ [AbortError]\n    at AbortSignal.Y (file:///x/cli.js:4930:315)",
+            "    at runAbort (node:internal/abort_controller:488:10)\nReal problem: ENOSPC",
+        ]
+        self.assertEqual(self._run(chunks), ["Real problem: ENOSPC"])
+
 
 class TestExtraReadPathsBlocklist(unittest.TestCase):
     """Tests for EXTRA_READ_PATHS sensitive directory blocking in get_extra_read_paths()."""

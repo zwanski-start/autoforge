@@ -46,20 +46,33 @@ class CliStderrFilter:
 
     Lines matching HOOK_ABORT_ERROR_RE, plus the indented "at ..." stack frames
     that follow them, are suppressed. Everything else is forwarded unchanged.
+
+    The SDK does not call this once per line: it passes raw pipe chunks from
+    anyio's TextReceiveStream (with trailing whitespace stripped), so a single
+    call may hold several lines, e.g. an abort trace followed by a real error.
+    Each chunk is therefore split into lines and filtered line by line, with
+    the trace state carried across calls. Because the SDK strips the trailing
+    newline, a chunk boundary inside a line can't be detected; such a split
+    header is forwarded rather than held back, so real output is never lost.
     """
 
     def __init__(self, stream=None):
         self._stream = stream
         self._in_abort_trace = False
 
-    def __call__(self, line: str) -> None:
+    def __call__(self, chunk: str) -> None:
+        forwarded = [line for line in chunk.splitlines() if self._keep(line)]
+        if forwarded:
+            print("\n".join(forwarded), file=self._stream or sys.stderr, flush=True)
+
+    def _keep(self, line: str) -> bool:
         if HOOK_ABORT_ERROR_RE.search(line):
             self._in_abort_trace = True
-            return
+            return False
         if self._in_abort_trace and line.lstrip().startswith("at "):
-            return
+            return False
         self._in_abort_trace = False
-        print(line, file=self._stream or sys.stderr, flush=True)
+        return True
 
 
 def convert_model_for_vertex(model: str) -> str:
