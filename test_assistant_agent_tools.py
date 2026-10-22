@@ -8,6 +8,7 @@ manager so no real agent subprocess is spawned.
 import asyncio
 import json
 import unittest
+from datetime import datetime
 from unittest.mock import patch
 
 from fastapi import HTTPException
@@ -120,6 +121,17 @@ class TestAgentControlTools(unittest.TestCase):
         result = self.call("agent_get_status")
         self.assertNotIn("is_error", result)
         self.assertEqual(_payload(result)["status"], "stopped")
+
+    def test_get_status_while_running_is_json_serializable(self):
+        started_at = datetime.now()
+        self.manager.status = "running"
+        self.manager.pid = 1234
+        self.manager.started_at = started_at
+        result = self.call("agent_get_status")
+        self.assertNotIn("is_error", result)
+        payload = _payload(result)
+        self.assertEqual(payload["status"], "running")
+        self.assertEqual(payload["started_at"], started_at.isoformat())
 
     def test_start_uses_settings_defaults_and_overrides(self):
         result = self.call("agent_start", {"max_concurrency": 3})

@@ -15,7 +15,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from dotenv import load_dotenv
@@ -284,7 +284,7 @@ class AssistantChatSession:
             json.dump(security_settings, f, indent=2)
 
         # Build MCP servers config: features MCP (subprocess) + agent control (in-process)
-        mcp_servers = {
+        mcp_servers: dict[str, Any] = {
             "features": {
                 "command": sys.executable,
                 "args": ["-m", "mcp_server.feature_mcp"],
@@ -295,8 +295,16 @@ class AssistantChatSession:
                     "PYTHONPATH": str(ROOT_DIR.resolve()),
                 },
             },
-            AGENT_CONTROL_SERVER_NAME: create_agent_control_server(self.project_name),
         }
+        # Agent control is optional: if the in-process server can't be built
+        # (e.g. an incompatible mcp package), keep the assistant usable without it.
+        try:
+            mcp_servers[AGENT_CONTROL_SERVER_NAME] = create_agent_control_server(self.project_name)
+        except Exception as e:
+            logger.warning(
+                f"Agent control tools unavailable for {self.project_name}; "
+                f"continuing without them: {e}"
+            )
 
         # Get system prompt with project context
         system_prompt = get_system_prompt(self.project_name, self.project_dir)
@@ -331,7 +339,7 @@ class AssistantChatSession:
                     setting_sources=["project"],
                     allowed_tools=[*READONLY_BUILTIN_TOOLS, *ASSISTANT_MCP_TOOLS],
                     disallowed_tools=DISALLOWED_ASSISTANT_TOOLS,
-                    mcp_servers=mcp_servers,  # type: ignore[arg-type]  # SDK accepts dict config at runtime
+                    mcp_servers=mcp_servers,
                     permission_mode="bypassPermissions",
                     max_turns=100,
                     cwd=str(self.project_dir.resolve()),

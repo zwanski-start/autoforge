@@ -83,7 +83,8 @@ def build_agent_control_tools(project_name: str) -> list[SdkMcpTool[Any]]:
         except Exception as e:
             logger.exception(f"Assistant agent_{action} failed for {project_name}")
             return _error(f"Failed to {action} agent: {e}")
-        payload = response.model_dump()
+        # mode="json" so datetimes (e.g. AgentStatus.started_at) become ISO strings
+        payload = response.model_dump(mode="json")
         return _result(payload, is_error=not payload.get("success", True))
 
     @tool(
