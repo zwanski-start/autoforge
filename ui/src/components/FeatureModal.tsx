@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, CheckCircle2, Circle, SkipForward, Trash2, Loader2, AlertCircle, Pencil, Link2, AlertTriangle, UserCircle } from 'lucide-react'
-import { useSkipFeature, useDeleteFeature, useFeatures, useResolveHumanInput, useAuth } from '../hooks/useProjects'
+import { useAuth, useSkipFeature, useDeleteFeature, useFeatures, useResolveHumanInput } from '../hooks/useProjects'
 import { EditFeatureForm } from './EditFeatureForm'
 import { HumanInputForm } from './HumanInputForm'
 import type { Feature } from '../lib/types'
@@ -270,7 +270,7 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
           )}
         </div>
 
-        {/* Actions (hidden for read-only users) */}
+        {/* Actions (hidden for read-only viewers) */}
         {editable && !feature.passes && (
           <>
             <Separator />
@@ -331,6 +331,7 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
                   <Button
                     variant="destructive"
                     size="icon"
+                    aria-label="Delete feature"
                     onClick={() => setShowDeleteConfirm(true)}
                     disabled={skipFeature.isPending}
                   >

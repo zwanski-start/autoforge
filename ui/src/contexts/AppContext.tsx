@@ -207,9 +207,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
-  // ---- Auth (read-only users can't open write modals via shortcuts) ----
-  const { canEdit } = useAuth()
-
   // ---- Modals ----
   const [showAddFeature, setShowAddFeature] = useState(false)
   const [showExpandProject, setShowExpandProject] = useState(false)
@@ -240,6 +237,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // ---- Derived state ----
   const selectedProjectData = projects?.find(p => p.name === selectedProject)
   const hasSpec = selectedProjectData?.has_spec ?? true
+  const { canEdit } = useAuth()
+  const canEditProject = canEdit(selectedProject)
 
   const progress = useMemo<Progress>(() => {
     // Prefer WebSocket progress when available; fall back to feature counts
@@ -359,8 +358,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
       // -- Modal shortcuts --
 
-      // N : Add new feature (when project selected)
-      if ((e.key === 'n' || e.key === 'N') && selectedProject && canEdit(selectedProject)) {
+      // N : Add new feature (when project selected and user can edit it)
+      if ((e.key === 'n' || e.key === 'N') && selectedProject && canEditProject) {
         e.preventDefault()
         setShowAddFeature(true)
         return
@@ -370,7 +369,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (
         (e.key === 'e' || e.key === 'E') &&
         selectedProject &&
-        canEdit(selectedProject) &&
+        canEditProject &&
         hasSpec &&
         features &&
         (features.pending.length +
@@ -401,6 +400,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (
         (e.key === 'r' || e.key === 'R') &&
         selectedProject &&
+        canEditProject &&
         !['running', 'pausing', 'paused_graceful'].includes(wsState.agentStatus)
       ) {
         e.preventDefault()
@@ -443,9 +443,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     showResetModal,
     wsState.agentStatus,
     hasSpec,
+    canEditProject,
     setActiveView,
     toggleSidebar,
-    canEdit,
   ])
 
   // ---- Assemble context value (memoised to avoid unnecessary re-renders) ----

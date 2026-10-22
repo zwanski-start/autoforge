@@ -316,8 +316,8 @@ Opening the UI redirects you to the provider. Afterwards a "Sign out" entry appe
    ```
 
 3. Make sure clients can only reach AutoForge through the proxy (bind to `127.0.0.1` with the proxy on the same host, or firewall the port).
-4. Also set `AUTOFORGE_ALLOW_REMOTE=1`, even when AutoForge itself is bound to `127.0.0.1`. Browsers reach it through the proxy's public hostname, and without this setting the WebSocket Origin check rejects the live-updates socket and the localhost-only guard rejects proxied requests that carry `X-Forwarded-For`.
-5. Configure the proxy to pass the original `Host` header through (e.g. nginx `proxy_set_header Host $host;`). AutoForge rejects cross-site writes by comparing the browser's `Origin` with `Host`, so a rewritten `Host` makes every change request fail with "Cross-origin request rejected".
+4. If users reach the proxy on a non-localhost hostname, also set `AUTOFORGE_ALLOW_REMOTE=1` (`--host 0.0.0.0` sets it for you). Otherwise the WebSocket Origin check refuses the live-update socket, and a forwarded client address (`X-Forwarded-For`) trips the localhost-only check.
+5. Configure the proxy to pass the original `Host` header through (e.g. nginx `proxy_set_header Host $host;`). Cross-origin write protection compares the browser's `Origin` with `Host`, so a rewritten `Host` makes every write fail.
 
 **oauth2-proxy (Entra ID)** sends `X-Forwarded-User` / `X-Forwarded-Groups` (the defaults) when run with `--set-xauthrequest` / `--pass-user-headers`; Entra ID groups arrive as object IDs, so use those in `auth.yaml`.
 

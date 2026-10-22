@@ -21,7 +21,6 @@ export function KanbanView() {
     setShowSpecChat,
   } = useAppContext()
   const { canEdit } = useAuth()
-  // Viewers get no write actions (the server would reject them anyway)
   const editable = canEdit(selectedProject)
 
   return (
