@@ -1,0 +1,11 @@
+{
+  "quality_gates": {
+    "enabled": true,
+    "strict_mode": true,
+    "timeout_seconds": 120,
+    "checks": {
+      "lint": true,
+      "type_check": true
+    }
+  }
+}
