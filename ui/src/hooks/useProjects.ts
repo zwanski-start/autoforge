@@ -4,7 +4,7 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../lib/api'
-import type { DevServerConfig, FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, ProvidersResponse, Settings, SettingsUpdate } from '../lib/types'
+import type { AuthInfo, AuthRole, DevServerConfig, FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, ProvidersResponse, Settings, SettingsUpdate } from '../lib/types'
 
 // ============================================================================
 // Projects
@@ -241,6 +241,43 @@ export function useSetupStatus() {
     queryFn: api.getSetupStatus,
     staleTime: 60000, // Cache for 1 minute
   })
+}
+
+// ============================================================================
+// Auth
+// ============================================================================
+
+// Used while /api/auth/me is loading or unavailable (auth disabled = full access)
+const AUTH_DISABLED: AuthInfo = {
+  enabled: false,
+  user: null,
+  groups: [],
+  is_admin: true,
+  default_role: 'admin',
+  projects: {},
+}
+
+export function useAuth() {
+  const { data } = useQuery({
+    queryKey: ['auth-me'],
+    queryFn: api.getAuthInfo,
+    staleTime: 60000,
+    retry: 1,
+  })
+  const auth = data ?? AUTH_DISABLED
+
+  const roleFor = (projectName: string | null): AuthRole => {
+    if (!auth.enabled || auth.is_admin) return 'admin'
+    if (!projectName) return auth.default_role
+    return auth.projects[projectName] ?? auth.default_role
+  }
+
+  return {
+    auth,
+    roleFor,
+    isAdmin: !auth.enabled || auth.is_admin,
+    canEdit: (projectName: string | null) => ['developer', 'admin'].includes(roleFor(projectName)),
+  }
 }
 
 export function useHealthCheck() {

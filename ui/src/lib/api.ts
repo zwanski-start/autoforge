@@ -17,6 +17,7 @@ import type {
   AgentStatusResponse,
   AgentActionResponse,
   SetupStatus,
+  AuthInfo,
   DirectoryListResponse,
   PathValidationResponse,
   AssistantConversation,
@@ -316,6 +317,10 @@ export async function getSpecStatus(projectName: string): Promise<SpecFileStatus
 
 export async function getSetupStatus(): Promise<SetupStatus> {
   return fetchJSON('/setup/status')
+}
+
+export async function getAuthInfo(): Promise<AuthInfo> {
+  return fetchJSON('/auth/me')
 }
 
 export async function healthCheck(): Promise<{ status: string }> {

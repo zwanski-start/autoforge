@@ -173,6 +173,18 @@ export interface SetupStatus {
   npm: boolean
 }
 
+// Auth types
+export type AuthRole = 'none' | 'viewer' | 'developer' | 'admin'
+
+export interface AuthInfo {
+  enabled: boolean
+  user: string | null
+  groups: string[]
+  is_admin: boolean
+  default_role: AuthRole
+  projects: Record<string, AuthRole>
+}
+
 // Dev Server types
 export type DevServerStatus = 'stopped' | 'running' | 'crashed'
 
