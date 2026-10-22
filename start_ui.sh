@@ -104,7 +104,9 @@ if [ ! -d "venv" ]; then
     if [ "$USE_UV" -eq 1 ]; then
         # --seed installs pip into the venv so start_ui.py can also manage packages
         if [ -n "$PYTHON_CMD" ]; then
-            uv venv venv --seed --python "$PYTHON_CMD"
+            # Pass the absolute path: uv treats bare "python3"/"python" as a version
+            # request and may pick one of its own (possibly older) managed Pythons
+            uv venv venv --seed --python "$(command -v "$PYTHON_CMD")"
         else
             uv venv venv --seed --python ">=$MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR"
         fi
@@ -120,6 +122,11 @@ if [ ! -d "venv" ]; then
             echo "  Ubuntu/Debian: sudo apt install python3-venv"
             echo "  Or try: $PYTHON_CMD -m ensurepip"
         fi
+        exit 1
+    fi
+    if ! python_is_supported "$VENV_PYTHON"; then
+        echo "[ERROR] The new virtual environment uses $("$VENV_PYTHON" --version 2>&1), but Python $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR+ is required"
+        echo "Please install Python $MIN_PYTHON_MAJOR.$MIN_PYTHON_MINOR or newer, then run: rm -rf venv && ./start_ui.sh"
         exit 1
     fi
 fi
