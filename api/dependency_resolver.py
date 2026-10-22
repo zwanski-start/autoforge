@@ -407,6 +407,68 @@ def get_blocked_features(features: list[dict]) -> list[dict]:
     return blocked
 
 
+def _format_ids(ids: list[int]) -> str:
+    return ", ".join(f"#{i}" for i in ids)
+
+
+def explain_stalled_features(
+    features: list[dict],
+    failed_ids: set[int] | None = None,
+) -> dict[int, str]:
+    """Explain why each unfinished feature cannot be started.
+
+    Used when nothing is running and no feature is ready, so the user can see
+    *why* the queue is stuck instead of the agent silently idling.
+
+    Args:
+        features: List of all feature dicts
+        failed_ids: IDs of features that exhausted their retries this session
+
+    Returns:
+        Map of feature_id -> human-readable reason, for every feature that is
+        neither passing nor permanently failed.
+    """
+    failed_ids = failed_ids or set()
+    feature_map = {f["id"]: f for f in features}
+    pending = [f for f in features if not f.get("passes") and f["id"] not in failed_ids]
+    pending_map = {f["id"]: f for f in pending}
+    human_ids = {f["id"] for f in pending if f.get("needs_human_input")}
+
+    cycle_of: dict[int, list[int]] = {}
+    for cycle in _detect_cycles(pending, pending_map):
+        for fid in cycle:
+            cycle_of[fid] = cycle
+
+    reasons: dict[int, str] = {}
+    for f in pending:
+        fid = f["id"]
+        deps = f.get("dependencies") or []
+        missing = [d for d in deps if d not in feature_map]
+        failed = [d for d in deps if d in failed_ids]
+        human = [d for d in deps if d in human_ids]
+        waiting = [d for d in deps if d in pending_map and d not in human_ids]
+
+        if fid in human_ids:
+            reasons[fid] = "waiting for human input"
+        elif missing:
+            reasons[fid] = f"depends on non-existent feature(s) {_format_ids(missing)}"
+        elif fid in cycle_of:
+            cycle = cycle_of[fid]
+            reasons[fid] = f"circular dependency {' -> '.join(f'#{i}' for i in cycle + cycle[:1])}"
+        elif failed:
+            reasons[fid] = f"depends on feature(s) that failed too many times {_format_ids(failed)}"
+        elif human:
+            reasons[fid] = f"depends on feature(s) waiting for human input {_format_ids(human)}"
+        elif waiting:
+            reasons[fid] = f"waiting on unfinished feature(s) {_format_ids(waiting)}"
+        elif f.get("in_progress"):
+            reasons[fid] = "marked in progress but no agent is working on it"
+        else:
+            reasons[fid] = "ready but not started"
+
+    return reasons
+
+
 def build_graph_data(features: list[dict]) -> dict:
     """Build graph data structure for visualization.
 
