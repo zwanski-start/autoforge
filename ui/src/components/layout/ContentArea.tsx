@@ -59,7 +59,7 @@ export function ContentArea() {
         <ProjectSetupRequired
           projectName={selectedProject}
           projectPath={selectedProjectData?.path}
-          onCreateWithClaude={() => setShowSpecChat(true)}
+          onCreateWithClaude={canEdit(selectedProject) ? () => setShowSpecChat(true) : undefined}
           onEditManually={() => {
             /* Could navigate to terminal view */
           }}

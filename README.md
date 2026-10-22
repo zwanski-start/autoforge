@@ -283,6 +283,8 @@ By default the UI only listens on localhost and has no login. When exposing it t
    ```
 
 3. Make sure clients can only reach AutoForge through the proxy (bind to `127.0.0.1` with the proxy on the same host, or firewall the port).
+4. Also set `AUTOFORGE_ALLOW_REMOTE=1`, even when AutoForge itself is bound to `127.0.0.1`. Browsers reach it through the proxy's public hostname, and without this setting the WebSocket Origin check rejects the live-updates socket and the localhost-only guard rejects proxied requests that carry `X-Forwarded-For`.
+5. Configure the proxy to pass the original `Host` header through (e.g. nginx `proxy_set_header Host $host;`). AutoForge rejects cross-site writes by comparing the browser's `Origin` with `Host`, so a rewritten `Host` makes every change request fail with "Cross-origin request rejected".
 
 **oauth2-proxy (Entra ID)** sends `X-Forwarded-User` / `X-Forwarded-Groups` (the defaults) when run with `--set-xauthrequest` / `--pass-user-headers`; Entra ID groups arrive as object IDs, so use those in `auth.yaml`.
 

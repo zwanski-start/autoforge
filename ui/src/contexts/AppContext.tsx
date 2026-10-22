@@ -16,7 +16,7 @@ import {
   type ReactNode,
 } from 'react'
 import { useQueryClient, useQuery, type QueryClient } from '@tanstack/react-query'
-import { useProjects, useFeatures, useAgentStatus, useSettings } from '../hooks/useProjects'
+import { useProjects, useFeatures, useAgentStatus, useSettings, useAuth } from '../hooks/useProjects'
 import { useProjectWebSocket } from '../hooks/useWebSocket'
 import { useFeatureSound } from '../hooks/useFeatureSound'
 import { useCelebration } from '../hooks/useCelebration'
@@ -207,6 +207,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     })
   }, [])
 
+  // ---- Auth (read-only users can't open write modals via shortcuts) ----
+  const { canEdit } = useAuth()
+
   // ---- Modals ----
   const [showAddFeature, setShowAddFeature] = useState(false)
   const [showExpandProject, setShowExpandProject] = useState(false)
@@ -357,7 +360,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // -- Modal shortcuts --
 
       // N : Add new feature (when project selected)
-      if ((e.key === 'n' || e.key === 'N') && selectedProject) {
+      if ((e.key === 'n' || e.key === 'N') && selectedProject && canEdit(selectedProject)) {
         e.preventDefault()
         setShowAddFeature(true)
         return
@@ -367,6 +370,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       if (
         (e.key === 'e' || e.key === 'E') &&
         selectedProject &&
+        canEdit(selectedProject) &&
         hasSpec &&
         features &&
         (features.pending.length +
@@ -441,6 +445,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     hasSpec,
     setActiveView,
     toggleSidebar,
+    canEdit,
   ])
 
   // ---- Assemble context value (memoised to avoid unnecessary re-renders) ----

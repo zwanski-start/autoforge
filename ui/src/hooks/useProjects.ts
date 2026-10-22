@@ -2,6 +2,7 @@
  * React Query hooks for project data
  */
 
+import { useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import * as api from '../lib/api'
 import type { AuthInfo, AuthRole, DevServerConfig, FeatureCreate, FeatureUpdate, ModelsResponse, ProjectSettingsUpdate, ProvidersResponse, Settings, SettingsUpdate } from '../lib/types'
@@ -266,17 +267,23 @@ export function useAuth() {
   })
   const auth = data ?? AUTH_DISABLED
 
-  const roleFor = (projectName: string | null): AuthRole => {
+  // Stable callbacks so consumers can list them as effect dependencies
+  const roleFor = useCallback((projectName: string | null): AuthRole => {
     if (!auth.enabled || auth.is_admin) return 'admin'
     if (!projectName) return auth.default_role
     return auth.projects[projectName] ?? auth.default_role
-  }
+  }, [auth])
+
+  const canEdit = useCallback(
+    (projectName: string | null) => ['developer', 'admin'].includes(roleFor(projectName)),
+    [roleFor],
+  )
 
   return {
     auth,
     roleFor,
     isAdmin: !auth.enabled || auth.is_admin,
-    canEdit: (projectName: string | null) => ['developer', 'admin'].includes(roleFor(projectName)),
+    canEdit,
   }
 }
 

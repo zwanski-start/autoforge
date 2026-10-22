@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { X, CheckCircle2, Circle, SkipForward, Trash2, Loader2, AlertCircle, Pencil, Link2, AlertTriangle, UserCircle } from 'lucide-react'
-import { useSkipFeature, useDeleteFeature, useFeatures, useResolveHumanInput } from '../hooks/useProjects'
+import { useSkipFeature, useDeleteFeature, useFeatures, useResolveHumanInput, useAuth } from '../hooks/useProjects'
 import { EditFeatureForm } from './EditFeatureForm'
 import { HumanInputForm } from './HumanInputForm'
 import type { Feature } from '../lib/types'
@@ -52,6 +52,8 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
   const { data: allFeatures } = useFeatures(projectName)
 
   const resolveHumanInput = useResolveHumanInput(projectName)
+  const { canEdit } = useAuth()
+  const editable = canEdit(projectName)
 
   // Build a map of feature ID to feature for looking up dependency names
   const featureMap = new Map<number, Feature>()
@@ -161,7 +163,7 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
           </div>
 
           {/* Human Input Request */}
-          {feature.needs_human_input && feature.human_input_request && (
+          {editable && feature.needs_human_input && feature.human_input_request && (
             <HumanInputForm
               request={feature.human_input_request}
               onSubmit={async (fields) => {
@@ -268,8 +270,8 @@ export function FeatureModal({ feature, projectName, onClose }: FeatureModalProp
           )}
         </div>
 
-        {/* Actions */}
-        {!feature.passes && (
+        {/* Actions (hidden for read-only users) */}
+        {editable && !feature.passes && (
           <>
             <Separator />
             <DialogFooter className="p-4 bg-muted/50">
