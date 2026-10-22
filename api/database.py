@@ -6,6 +6,7 @@ SQLite database schema for feature storage using SQLAlchemy.
 """
 
 import logging
+import os
 import re
 import sqlite3
 import sys
@@ -391,6 +392,64 @@ def _apply_journal_mode(engine, journal_mode: str) -> None:
             cursor.close()
 
 
+def _has_wal_header(db_path: Path) -> bool:
+    """Return True if the database file header says it is in WAL mode.
+
+    Bytes 18 and 19 of the SQLite header are the file format write/read
+    versions; both are 2 for WAL databases and 1 for rollback-journal ones.
+    """
+    try:
+        with open(db_path, "rb") as f:
+            header = f.read(20)
+    except OSError:
+        return False
+    return len(header) == 20 and header.startswith(b"SQLite format 3\x00") and 2 in (header[18], header[19])
+
+
+def _probe_wal_support(db_dir: Path) -> bool:
+    """Check whether WAL mode works in ``db_dir`` using a throwaway database.
+
+    Probing on a separate file means a shared features.db is never switched to
+    WAL (and back) by every process that opens it on a filesystem where WAL
+    doesn't work. Doing that while other processes have the database open
+    causes "database is locked" in the new process and "disk I/O error" in the
+    existing ones.
+    """
+    # Per-process file name so concurrent probes don't interfere with each other
+    probe_path = db_dir / f".wal-probe-{os.getpid()}.db"
+    supported = False
+    try:
+        conn = sqlite3.connect(str(probe_path), timeout=5)
+        try:
+            mode = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            conn.execute("CREATE TABLE IF NOT EXISTS probe (x INTEGER)")
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchall()
+            supported = mode is not None and str(mode[0]).lower() == "wal"
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        logger.info("SQLite WAL probe failed in %s: %s", db_dir, e)
+    finally:
+        for suffix in ("", "-wal", "-shm", "-journal"):
+            try:
+                Path(f"{probe_path}{suffix}").unlink()
+            except OSError:
+                pass
+    return supported
+
+
+def _wal_supported(db_dir: Path) -> bool:
+    """Return whether WAL works in ``db_dir``, probing once per directory per process."""
+    key = db_dir.as_posix()
+    if key not in _wal_support_cache:
+        _wal_support_cache[key] = _probe_wal_support(db_dir)
+    return _wal_support_cache[key]
+
+
+# Cache of WAL probe results. Key: database directory (posix string)
+_wal_support_cache: dict[str, bool] = {}
+
+
 def _force_rollback_journal(db_path: Path) -> None:
     """Convert a database that is stuck in WAL mode back to DELETE mode.
 
@@ -515,9 +574,21 @@ def create_database(project_dir: Path) -> tuple:
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Choose journal mode based on filesystem type
-    # WAL mode doesn't work reliably on network filesystems and can cause corruption
-    is_network = _is_network_path(project_dir)
-    journal_mode = "DELETE" if is_network else "WAL"
+    # WAL mode doesn't work reliably on network filesystems and can cause corruption.
+    # Filesystems we can't detect are probed on a throwaway file so the shared
+    # features.db is never switched to WAL where WAL doesn't work.
+    use_wal = not _is_network_path(project_dir) and _wal_supported(db_path.parent)
+    journal_mode = "WAL" if use_wal else "DELETE"
+
+    if not use_wal and _has_wal_header(db_path):
+        # A database left in WAL mode (e.g. by an older version that crashed with
+        # "disk I/O error") can't be opened normally without WAL support
+        logger.warning("Converting %s from WAL to journal_mode=DELETE", db_path)
+        try:
+            _force_rollback_journal(db_path)
+        except sqlite3.OperationalError as e:
+            # Another process may hold the database; the retry below handles it
+            logger.warning("Could not convert %s to journal_mode=DELETE yet: %s", db_path, e)
 
     engine = create_engine(db_url, connect_args={
         "check_same_thread": False,
@@ -533,13 +604,14 @@ def create_database(project_dir: Path) -> tuple:
         # Some filesystems (WSL /mnt/*, Docker/VM shares, FUSE mounts, ...) don't
         # support the shared memory WAL needs and fail with "disk I/O error".
         # Fall back to the rollback journal instead of failing to start.
-        if journal_mode != "WAL" or not _is_wal_io_error(e):
+        if not _is_wal_io_error(e):
             raise
         logger.warning(
-            "SQLite WAL mode failed for %s (%s); falling back to journal_mode=DELETE. "
+            "SQLite failed to open %s in journal_mode=%s (%s); falling back to journal_mode=DELETE. "
             "This usually means the project is on a network, VM-shared or FUSE filesystem.",
-            db_path, e,
+            db_path, journal_mode, e,
         )
+        _wal_support_cache[db_path.parent.as_posix()] = False
         engine.dispose()
         _force_rollback_journal(db_path)
         _apply_journal_mode(engine, "DELETE")
