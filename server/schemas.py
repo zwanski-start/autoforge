@@ -285,6 +285,22 @@ class SetupStatus(BaseModel):
 
 
 # ============================================================================
+# Auth Schemas
+# ============================================================================
+
+class AuthInfo(BaseModel):
+    """Current user's identity and effective roles."""
+    enabled: bool
+    user: str | None = None
+    groups: list[str] = Field(default_factory=list)
+    is_admin: bool
+    # Role on projects not listed in `projects` (none | viewer | developer | admin)
+    default_role: str
+    # Effective role per project (projects with no access are omitted)
+    projects: dict[str, str] = Field(default_factory=dict)
+
+
+# ============================================================================
 # WebSocket Message Schemas
 # ============================================================================
 
