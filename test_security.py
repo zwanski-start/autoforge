@@ -27,6 +27,7 @@ from security import (
     validate_pkill_command,
     validate_playwright_command,
     validate_project_command,
+    validate_rm_command,
 )
 
 
@@ -202,6 +203,104 @@ def test_validate_init_script():
             print(f"         Expected: {expected}, Got: {actual}")
             if reason:
                 print(f"         Reason: {reason}")
+            failed += 1
+
+    return passed, failed
+
+
+def test_validate_rm():
+    """Test rm command validation (targets restricted to the project directory)."""
+    print("\nTesting rm validation:\n")
+    passed = 0
+    failed = 0
+
+    with tempfile.TemporaryDirectory() as tmp:
+        project_dir = Path(tmp) / "project"
+        project_dir.mkdir()
+        (project_dir / "src").mkdir()
+        outside = Path(tmp).parent / "not-the-project"
+        abs_inside = str(project_dir / "dist")
+
+        # Test cases: (command, should_be_allowed, description)
+        test_cases = [
+            # Allowed cases
+            ("rm file.txt", True, "single file"),
+            ("rm -rf node_modules", True, "recursive dir in project"),
+            ("rm -rf temp/", True, "trailing slash"),
+            ("rm -f src/*.log", True, "glob inside subdirectory"),
+            ("rm -rf src/*", True, "wildcard inside subdirectory"),
+            ("rm -rf ./dist build", True, "multiple targets"),
+            (f"rm -rf {abs_inside}", True, "absolute path inside project"),
+            ("rm -rf src/../dist", True, "dotdot that stays inside project"),
+            ("rm -- -weird-name", True, "end of options marker"),
+            # Blocked cases
+            ("rm -rf /", False, "root"),
+            ("rm -rf /*", False, "root wildcard"),
+            ("rm -rf ~", False, "home"),
+            ("rm -rf ~/projects", False, "home-relative path"),
+            ("rm -rf $HOME", False, "variable expansion"),
+            ("rm -rf \"$DIR\"/build", False, "quoted variable expansion"),
+            ("rm -rf `pwd`", False, "command substitution"),
+            ("rm -rf .", False, "current directory"),
+            ("rm -rf ..", False, "parent directory"),
+            ("rm -rf ./", False, "current directory with slash"),
+            ("rm -rf *", False, "bare wildcard at project root"),
+            ("rm -rf .*", False, "dotfile wildcard at project root"),
+            ("rm -rf ./*", False, "explicit bare wildcard at project root"),
+            ("rm -rf ../other-project", False, "sibling directory"),
+            ("rm -rf src/../../", False, "dotdot escaping project"),
+            (f"rm -rf {outside}", False, "absolute path outside project"),
+            ("rm -rf /etc/passwd", False, "system file"),
+            ("rm -rf --no-preserve-root /", False, "no-preserve-root"),
+            ("rm -rf", False, "missing target"),
+        ]
+
+        for cmd, should_allow, description in test_cases:
+            allowed, reason = validate_rm_command(cmd, project_dir)
+            if allowed == should_allow:
+                print(f"  PASS: {cmd!r} ({description})")
+                passed += 1
+            else:
+                expected = "allowed" if should_allow else "blocked"
+                actual = "allowed" if allowed else "blocked"
+                print(f"  FAIL: {cmd!r} ({description})")
+                print(f"         Expected: {expected}, Got: {actual}")
+                if reason:
+                    print(f"         Reason: {reason}")
+                failed += 1
+
+        # Symlinked parent pointing outside the project must not be a bypass
+        link = project_dir / "escape"
+        try:
+            link.symlink_to(Path(tmp), target_is_directory=True)
+        except (OSError, NotImplementedError):
+            link = None
+        if link is not None:
+            allowed, _ = validate_rm_command("rm -rf escape/other", project_dir)
+            if not allowed:
+                print("  PASS: 'rm -rf escape/other' (symlinked parent outside project)")
+                passed += 1
+            else:
+                print("  FAIL: 'rm -rf escape/other' (symlinked parent outside project)")
+                failed += 1
+
+        # Integration: hook passes project_dir through context
+        input_data = {"tool_name": "Bash", "tool_input": {"command": "npm run build && rm -rf /"}}
+        result = asyncio.run(bash_security_hook(input_data, context={"project_dir": str(project_dir)}))
+        if result.get("decision") == "block":
+            print("  PASS: hook blocks 'npm run build && rm -rf /'")
+            passed += 1
+        else:
+            print("  FAIL: hook should block 'npm run build && rm -rf /'")
+            failed += 1
+
+        input_data = {"tool_name": "Bash", "tool_input": {"command": "rm -rf dist && npm run build"}}
+        result = asyncio.run(bash_security_hook(input_data, context={"project_dir": str(project_dir)}))
+        if result.get("decision") != "block":
+            print("  PASS: hook allows 'rm -rf dist && npm run build'")
+            passed += 1
+        else:
+            print(f"  FAIL: hook should allow 'rm -rf dist && npm run build': {result.get('reason')}")
             failed += 1
 
     return passed, failed
@@ -1010,6 +1109,11 @@ def main():
     init_passed, init_failed = test_validate_init_script()
     passed += init_passed
     failed += init_failed
+
+    # Test rm validation
+    rm_passed, rm_failed = test_validate_rm()
+    passed += rm_passed
+    failed += rm_failed
 
     # Test pattern matching (Phase 1)
     pattern_passed, pattern_failed = test_pattern_matching()

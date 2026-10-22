@@ -59,7 +59,7 @@ ALLOWED_COMMANDS = {
     "curl",
     # File operations
     "mv",
-    "rm",  # Use with caution
+    "rm",  # Targets restricted to the project directory; validated separately
     "touch",
     # Shell scripts
     "sh",
@@ -71,7 +71,7 @@ ALLOWED_COMMANDS = {
 }
 
 # Commands that need additional validation even when in the allowlist
-COMMANDS_NEEDING_EXTRA_VALIDATION = {"pkill", "chmod", "init.sh", "playwright-cli"}
+COMMANDS_NEEDING_EXTRA_VALIDATION = {"pkill", "chmod", "init.sh", "playwright-cli", "rm"}
 
 # Commands that are NEVER allowed, even with user approval
 # These commands can cause permanent system damage or security breaches
@@ -411,6 +411,78 @@ def validate_chmod_command(command_string: str) -> tuple[bool, str]:
 
     if not re.match(r"^[ugoa]*\+x$", mode):
         return False, f"chmod only allowed with +x mode, got: {mode}"
+
+    return True, ""
+
+
+def _is_within(path: str, root: str) -> bool:
+    """Return True if path is strictly inside root (not root itself)."""
+    try:
+        return os.path.commonpath([path, root]) == root and path != root
+    except ValueError:
+        # Different drives on Windows
+        return False
+
+
+def validate_rm_command(command_string: str, project_dir: Optional[Path] = None) -> tuple[bool, str]:
+    """
+    Validate rm commands - targets must stay inside the project directory.
+
+    Blocks:
+    - Root, home, current/parent directory targets (rm -rf /, ~, ., ..)
+    - Home-relative and variable/command-substitution targets that can't be
+      validated statically (~/x, $HOME, `pwd`)
+    - Bare wildcards at the project root (rm -rf *, rm -rf .*)
+    - Absolute or ../ paths that resolve outside the project directory
+      (or to the project directory itself)
+    - --no-preserve-root
+
+    Relative paths are resolved against project_dir (or the current working
+    directory when project_dir is unknown).
+
+    Returns:
+        Tuple of (is_allowed, reason_if_blocked)
+    """
+    try:
+        tokens = shlex.split(command_string)
+    except ValueError:
+        return False, "Could not parse rm command"
+
+    if not tokens or os.path.basename(tokens[0]) != "rm":
+        return False, "Not an rm command"
+
+    targets = []
+    end_of_options = False
+    for token in tokens[1:]:
+        if not end_of_options and token == "--":
+            end_of_options = True
+        elif not end_of_options and token.startswith("-") and token != "-":
+            if token == "--no-preserve-root":
+                return False, "rm --no-preserve-root is not allowed"
+        else:
+            targets.append(token)
+
+    if not targets:
+        return False, "rm requires at least one target"
+
+    base = os.path.realpath(str(project_dir) if project_dir else os.getcwd())
+
+    for target in targets:
+        if target.startswith("~") or "$" in target or "`" in target:
+            return False, f"rm target '{target}' uses home/variable expansion and cannot be validated"
+
+        joined = os.path.normpath(os.path.join(base, target))
+        # Resolve symlinks in the parent only: rm removes a symlink itself,
+        # not what it points to.
+        parent, name = os.path.split(joined)
+        resolved = os.path.join(os.path.realpath(parent), name) if name else os.path.realpath(joined)
+
+        if not _is_within(resolved, base):
+            return False, f"rm target '{target}' is outside the project directory"
+
+        # Pure wildcard directly in the project root would wipe the whole project
+        if os.path.dirname(resolved) == base and re.fullmatch(r"[*?.]+", name) and re.search(r"[*?]", name):
+            return False, f"rm target '{target}' would delete the entire project directory"
 
     return True, ""
 
@@ -990,6 +1062,10 @@ async def bash_security_hook(input_data, tool_use_id=None, context=None):
                     return {"decision": "block", "reason": reason}
             elif cmd == "playwright-cli":
                 allowed, reason = validate_playwright_command(cmd_segment)
+                if not allowed:
+                    return {"decision": "block", "reason": reason}
+            elif cmd == "rm":
+                allowed, reason = validate_rm_command(cmd_segment, project_dir)
                 if not allowed:
                     return {"decision": "block", "reason": reason}
 
