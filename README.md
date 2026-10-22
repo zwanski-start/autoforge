@@ -258,6 +258,36 @@ This project uses a defense-in-depth security approach (see `security.py` and `c
 
 Commands not in the allowlist are blocked by the security hook.
 
+### Authentication & Roles (LAN / Remote Access)
+
+By default the UI only listens on localhost and has no login. When exposing it to other people (`--host 0.0.0.0`), put it behind an authenticating reverse proxy and enable **proxy-header auth**. AutoForge does not run OAuth itself; the proxy handles SSO (Authentik, oauth2-proxy with Entra ID / Google / GitHub / Keycloak, Authelia, Pomerium, ...) and passes the user and their groups in HTTP headers. AutoForge maps those to roles per project:
+
+| Role | Access |
+|------|--------|
+| `viewer` | Read-only: features, graph, logs, live progress |
+| `developer` | Full project control: agent, features, terminal, dev server, chats, schedules, prompts |
+| `admin` | Everything, plus global settings, the server folder browser, creating/deleting projects |
+
+1. Copy [`examples/auth.yaml`](examples/auth.yaml) to `~/.autoforge/auth.yaml` and list your admins, groups and projects.
+2. Set environment variables (e.g. in `~/.autoforge/.env` or `.env`):
+
+   ```bash
+   AUTOFORGE_AUTH_MODE=header
+   # Header names (defaults suit oauth2-proxy; these are the Authentik values)
+   AUTOFORGE_AUTH_USER_HEADER=X-authentik-username
+   AUTOFORGE_AUTH_GROUPS_HEADER=X-authentik-groups
+   # Only these addresses may send identity headers (default: 127.0.0.1,::1)
+   AUTOFORGE_AUTH_TRUSTED_PROXIES=127.0.0.1,::1
+   # Recommended: the proxy must also send X-AutoForge-Proxy-Secret: <value>
+   AUTOFORGE_AUTH_PROXY_SECRET=change-me
+   ```
+
+3. Make sure clients can only reach AutoForge through the proxy (bind to `127.0.0.1` with the proxy on the same host, or firewall the port).
+
+**oauth2-proxy (Entra ID)** sends `X-Forwarded-User` / `X-Forwarded-Groups` (the defaults) when run with `--set-xauthrequest` / `--pass-user-headers`; Entra ID groups arrive as object IDs, so use those in `auth.yaml`.
+
+Requests from addresses not in `AUTOFORGE_AUTH_TRUSTED_PROXIES` are rejected. If your proxy sends `X-Forwarded-For`, uvicorn replaces the client address with the forwarded one for proxies it trusts (127.0.0.1 by default); in that case set `AUTOFORGE_AUTH_PROXY_SECRET` and `AUTOFORGE_AUTH_TRUSTED_PROXIES=*`. `/api/health` stays unauthenticated for proxy health checks.
+
 ---
 
 ## Web UI Development

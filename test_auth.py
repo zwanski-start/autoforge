@@ -106,6 +106,12 @@ class TestRoleConfig(unittest.TestCase):
             with self.assertRaises(ValueError):
                 parse_role_config(bad)
 
+    def test_example_config_is_valid(self):
+        import yaml
+        example = Path(__file__).parent / "examples" / "auth.yaml"
+        config = parse_role_config(yaml.safe_load(example.read_text()))
+        assert project_role(AuthUser("bob@example.com"), "my-app", config) == ROLE_DEVELOPER
+
     def test_store_fails_closed_on_invalid_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "auth.yaml"
