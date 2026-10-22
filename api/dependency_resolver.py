@@ -411,6 +411,92 @@ def _format_ids(ids: list[int]) -> str:
     return ", ".join(f"#{i}" for i in ids)
 
 
+def _find_cycle_members(graph: dict[int, list[int]]) -> dict[int, list[int]]:
+    """Map every feature that lies on a dependency cycle to one such cycle.
+
+    Uses Tarjan's strongly connected components (iteratively, so deep chains
+    don't hit the recursion limit). A feature is on a cycle only if its SCC
+    has more than one member or it depends on itself; features that merely
+    depend on a cycle are not included.
+
+    Args:
+        graph: Map of feature_id -> dependency IDs (all keys of the graph)
+
+    Returns:
+        Map of feature_id -> shortest cycle through that feature, rotated to
+        start at its lowest ID (e.g. [3, 4] for 3 -> 4 -> 3)
+    """
+    index: dict[int, int] = {}
+    low: dict[int, int] = {}
+    on_stack: set[int] = set()
+    stack: list[int] = []
+    sccs: list[list[int]] = []
+    counter = 0
+
+    for root in graph:
+        if root in index:
+            continue
+        work: list[tuple[int, int]] = [(root, 0)]
+        while work:
+            node, i = work.pop()
+            if i == 0:
+                index[node] = low[node] = counter
+                counter += 1
+                stack.append(node)
+                on_stack.add(node)
+            deps = graph[node]
+            if i < len(deps):
+                work.append((node, i + 1))
+                dep = deps[i]
+                if dep not in index:
+                    work.append((dep, 0))
+                elif dep in on_stack:
+                    low[node] = min(low[node], index[dep])
+                continue
+            if low[node] == index[node]:
+                scc: list[int] = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    scc.append(member)
+                    if member == node:
+                        break
+                sccs.append(scc)
+            if work:
+                parent = work[-1][0]
+                low[parent] = min(low[parent], low[node])
+
+    cycle_of: dict[int, list[int]] = {}
+    for scc in sccs:
+        if len(scc) == 1:
+            if scc[0] in graph[scc[0]]:
+                cycle_of[scc[0]] = [scc[0]]
+            continue
+        members = set(scc)
+        for start in scc:
+            # Shortest path back to `start` using only edges inside the SCC
+            prev: dict[int, int] = {}
+            queue: deque[int] = deque([start])
+            end = start
+            while queue:
+                node = queue.popleft()
+                if start in graph[node]:
+                    end = node
+                    break
+                for dep in graph[node]:
+                    if dep in members and dep not in prev:
+                        prev[dep] = node
+                        queue.append(dep)
+            path = [end]
+            while path[-1] != start:
+                path.append(prev[path[-1]])
+            cycle = path[::-1]
+            pivot = cycle.index(min(cycle))
+            cycle_of[start] = cycle[pivot:] + cycle[:pivot]
+
+    return cycle_of
+
+
 def explain_stalled_features(
     features: list[dict],
     failed_ids: set[int] | None = None,
@@ -434,10 +520,10 @@ def explain_stalled_features(
     pending_map = {f["id"]: f for f in pending}
     human_ids = {f["id"] for f in pending if f.get("needs_human_input")}
 
-    cycle_of: dict[int, list[int]] = {}
-    for cycle in _detect_cycles(pending, pending_map):
-        for fid in cycle:
-            cycle_of[fid] = cycle
+    cycle_of = _find_cycle_members({
+        f["id"]: [d for d in (f.get("dependencies") or []) if d in pending_map]
+        for f in pending
+    })
 
     reasons: dict[int, str] = {}
     for f in pending:
