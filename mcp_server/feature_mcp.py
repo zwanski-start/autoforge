@@ -22,7 +22,7 @@ Tools:
 - feature_get_ready: Get features ready to implement
 - feature_get_blocked: Get features blocked by dependencies (with limit)
 - feature_get_graph: Get the dependency graph
-- feature_verify_quality: Run the project's linters/type checkers (quality gates)
+- feature_verify_quality: Run the project's linters/type checkers (only when quality gates are enabled)
 
 Note: Feature selection (which feature to work on) is handled by the
 orchestrator, not by agents. Agents receive pre-assigned feature IDs.
@@ -402,6 +402,9 @@ def feature_verify_quality(
 ) -> str:
     """Run the project's linters and type checkers and report the results.
 
+    Only works when quality gates are enabled for the project in
+    .autoforge/config.json; otherwise it returns an error and runs nothing.
+
     Auto-detects ESLint or Biome, TypeScript (tsc), ruff or flake8, and mypy
     from the project's config files. Use this before feature_mark_passing to
     catch lint/type errors early. When feature_id is given, the report is
@@ -413,6 +416,13 @@ def feature_verify_quality(
     Returns:
         JSON with: passed (bool), summary, checks (name, command, passed, output)
     """
+    # The checks run project tooling outside the bash sandbox, so they must
+    # stay behind the same opt-in as feature_mark_passing.
+    if not load_config(PROJECT_DIR).enabled:
+        return json.dumps({
+            "error": "Quality gates are not enabled for this project (.autoforge/config.json)"
+        })
+
     session = get_session()
     try:
         if feature_id is not None:

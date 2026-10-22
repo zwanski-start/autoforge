@@ -239,7 +239,7 @@ MCP tools available to the agent:
 - `feature_mark_in_progress` - Mark feature as in progress
 - `feature_mark_passing` - Mark feature complete (runs quality gates first when enabled)
 - `feature_mark_failing` - Mark feature as failing (optional `reason`; increments `failure_count`)
-- `feature_verify_quality` - Run detected linters/type checkers and store results as evidence
+- `feature_verify_quality` - Run detected linters/type checkers and store results as evidence (only when quality gates are enabled)
 - `feature_skip` - Move feature to end of queue
 - `feature_clear_in_progress` - Clear in-progress status
 - `feature_create_bulk` - Initialize all features (used by initializer)
@@ -266,6 +266,7 @@ Opt-in per project via `.autoforge/config.json` (disabled by default):
 - Auto-detects ESLint or Biome, TypeScript (`tsc`), ruff or flake8, and mypy. A tool runs only if the project both configures it and has it installed (`node_modules/.bin`, `.venv`/`venv`, or PATH). Commands are never read from config.
 - When enabled, `feature_mark_passing` runs the checks first. Strict mode (default) refuses to mark the feature passing on failure; non-strict marks it passing and returns a warning.
 - Results are stored on the feature (`quality_result`), along with `failure_reason` and `failure_count`.
+- `feature_verify_quality` is only offered to coding/testing agents when gates are enabled, and refuses to run anything when they are disabled.
 - The MCP server runs outside the bash sandbox, and linters load agent-written config files (e.g. `eslint.config.js`), so only enable this for projects you trust the agent with.
 
 ### React UI (ui/)

@@ -146,7 +146,7 @@ After thorough verification, mark the feature as passing:
 Use the feature_mark_passing tool with feature_id=42
 ```
 
-If the project has quality gates enabled, `feature_mark_passing` first runs the project's linters and type checkers. If it returns a "Quality gate failed" error, fix the reported errors and call it again. You can run the same checks yourself at any time with `feature_verify_quality with feature_id=42`.
+If the project has quality gates enabled, `feature_mark_passing` first runs the project's linters and type checkers. If it returns a "Quality gate failed" error, fix the reported errors and call it again. When quality gates are enabled, you can also run the same checks yourself at any time with `feature_verify_quality with feature_id=42` (the tool is only available, and only works, when quality gates are enabled for the project).
 
 **NEVER:**
 
@@ -244,6 +244,7 @@ feature_skip with feature_id={id}
 feature_clear_in_progress with feature_id={id}
 
 # 8. Run lint/type-check quality gates and store the results as evidence
+#    (only available when quality gates are enabled for the project)
 feature_verify_quality with feature_id={id}
 ```
 

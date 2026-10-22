@@ -277,6 +277,7 @@ class TestFeatureMcpIntegration:
 
     def test_verify_quality_stores_evidence(self, mcp, tmp_path):
         _js_project(tmp_path, tsc_exit=1)
+        _write_config(tmp_path, {"enabled": True})
         result = json.loads(mcp.feature_verify_quality(1))
         assert result["passed"] is False
         assert [c["name"] for c in result["checks"]] == ["eslint", "tsc"]
@@ -285,12 +286,34 @@ class TestFeatureMcpIntegration:
         assert _feature(mcp)["passes"] is False
 
     def test_verify_quality_without_feature(self, mcp, tmp_path):
+        _write_config(tmp_path, {"enabled": True})
         result = json.loads(mcp.feature_verify_quality())
         assert result["passed"] is True
         assert result["checks"] == []
 
-    def test_verify_quality_unknown_feature(self, mcp):
+    def test_verify_quality_unknown_feature(self, mcp, tmp_path):
+        _write_config(tmp_path, {"enabled": True})
         assert "not found" in json.loads(mcp.feature_verify_quality(999))["error"]
+
+    @pytest.mark.parametrize("section", [None, {"enabled": False}])
+    def test_verify_quality_disabled_runs_nothing(self, mcp, tmp_path, monkeypatch, section):
+        _js_project(tmp_path, eslint_exit=1)
+        if section is not None:
+            _write_config(tmp_path, section)
+
+        def fail(*args, **kwargs):
+            raise AssertionError("quality tooling must not run when gates are disabled")
+
+        monkeypatch.setattr(quality_gates, "detect_checks", fail)
+        monkeypatch.setattr(quality_gates, "_run_check", fail)
+        monkeypatch.setattr(quality_gates.subprocess, "run", fail)
+
+        for feature_id in (1, None):
+            result = json.loads(mcp.feature_verify_quality(feature_id))
+            assert result["error"] == (
+                "Quality gates are not enabled for this project (.autoforge/config.json)"
+            )
+        assert _feature(mcp)["quality_result"] is None
 
     def test_mark_failing_tracks_reason_and_count(self, mcp):
         mcp.feature_mark_failing(1, reason="Login button does nothing")
@@ -330,3 +353,27 @@ def test_migration_adds_columns_to_existing_db(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", *sys.argv[1:]]))
+
+
+class TestClientToolExposure:
+    """feature_verify_quality is only offered to agents when gates are enabled."""
+
+    TOOL = "mcp__features__feature_verify_quality"
+
+    def test_hidden_without_config(self, tmp_path):
+        from client import get_feature_tools
+        for agent_type in ("coding", "testing", "initializer"):
+            assert self.TOOL not in get_feature_tools(agent_type, tmp_path)
+
+    def test_hidden_when_disabled(self, tmp_path):
+        from client import get_feature_tools
+        _write_config(tmp_path, {"enabled": False})
+        assert self.TOOL not in get_feature_tools("coding", tmp_path)
+        assert self.TOOL not in get_feature_tools("testing", tmp_path)
+
+    def test_exposed_when_enabled(self, tmp_path):
+        from client import get_feature_tools
+        _write_config(tmp_path, {"enabled": True})
+        assert self.TOOL in get_feature_tools("coding", tmp_path)
+        assert self.TOOL in get_feature_tools("testing", tmp_path)
+        assert self.TOOL not in get_feature_tools("initializer", tmp_path)

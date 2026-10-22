@@ -16,6 +16,7 @@ from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import HookContext, HookInput, HookMatcher, SyncHookJSONOutput
 from dotenv import load_dotenv
 
+from quality_gates import load_config as load_quality_config
 from security import SENSITIVE_DIRECTORIES, bash_security_hook
 
 # Load environment variables from .env file if present
@@ -157,7 +158,6 @@ CODING_AGENT_TOOLS = [
     "mcp__features__feature_mark_in_progress",
     "mcp__features__feature_mark_passing",
     "mcp__features__feature_mark_failing",
-    "mcp__features__feature_verify_quality",
     "mcp__features__feature_skip",
     "mcp__features__feature_clear_in_progress",
 ]
@@ -171,7 +171,6 @@ TESTING_AGENT_TOOLS = [
     "mcp__features__feature_get_graph",
     "mcp__features__feature_mark_passing",
     "mcp__features__feature_mark_failing",
-    "mcp__features__feature_verify_quality",
 ]
 
 INITIALIZER_AGENT_TOOLS = [
@@ -191,6 +190,31 @@ INITIALIZER_AGENT_TOOLS = [
 ALL_FEATURE_MCP_TOOLS = sorted(
     set(CODING_AGENT_TOOLS) | set(TESTING_AGENT_TOOLS) | set(INITIALIZER_AGENT_TOOLS)
 )
+
+# Runs project linters/type checkers from the feature MCP server, which sits
+# outside the bash sandbox. Only exposed to coding/testing agents when quality
+# gates are enabled for the project (.autoforge/config.json).
+QUALITY_GATE_TOOLS = [
+    "mcp__features__feature_verify_quality",
+]
+
+
+def get_feature_tools(agent_type: str, project_dir: Path) -> list[str]:
+    """Return the feature MCP tools an agent of this type may see.
+
+    Quality gate tools are added for coding/testing agents only when the
+    project has quality gates enabled.
+    """
+    feature_tools_map = {
+        "coding": CODING_AGENT_TOOLS,
+        "testing": TESTING_AGENT_TOOLS,
+        "initializer": INITIALIZER_AGENT_TOOLS,
+    }
+    tools = list(feature_tools_map.get(agent_type, CODING_AGENT_TOOLS))
+    if agent_type != "initializer" and load_quality_config(project_dir).enabled:
+        tools.extend(QUALITY_GATE_TOOLS)
+    return tools
+
 
 # Built-in tools available to agents.
 # WebFetch and WebSearch are included so coding agents can look up current
@@ -236,12 +260,8 @@ def create_client(
     The Claude SDK auto-detects credentials from the Claude CLI configuration
     """
     # Select the feature MCP tools appropriate for this agent type
-    feature_tools_map = {
-        "coding": CODING_AGENT_TOOLS,
-        "testing": TESTING_AGENT_TOOLS,
-        "initializer": INITIALIZER_AGENT_TOOLS,
-    }
-    feature_tools = feature_tools_map.get(agent_type, CODING_AGENT_TOOLS)
+    feature_tools = get_feature_tools(agent_type, project_dir)
+    quality_tools = [t for t in QUALITY_GATE_TOOLS if t in feature_tools]
 
     # Select max_turns based on agent type:
     #   - coding/initializer: 300 turns (complex multi-step implementation)
@@ -275,6 +295,7 @@ def create_client(
         "WebSearch(*)",
         # Allow Feature MCP tools for feature management
         *ALL_FEATURE_MCP_TOOLS,
+        *quality_tools,
     ]
 
     # Add extra read paths from environment variable (read-only access)
