@@ -65,7 +65,8 @@ class SpecChatSession:
         self.created_at = datetime.now()
         self._conversation_id: Optional[str] = None
         self._client_entered: bool = False  # Track if context manager is active
-        self._owns_claude_md: bool = False  # Wrote CLAUDE.md via claude_md_guard
+        self._owns_claude_md: bool = False  # Holds CLAUDE.md via claude_md_guard
+        self._system_prompt: Optional[str] = None  # Written to CLAUDE.md for each turn
 
     async def close(self) -> None:
         """Clean up resources and close the Claude client."""
@@ -79,8 +80,14 @@ class SpecChatSession:
                 self.client = None
         self._release_claude_md()
 
+    def _hold_claude_md(self) -> None:
+        """Put the session prompt in CLAUDE.md while the CLI starts or answers a turn."""
+        if not self._owns_claude_md and self._system_prompt is not None:
+            write_session_claude_md(self.project_dir, self._system_prompt)
+            self._owns_claude_md = True
+
     def _release_claude_md(self) -> None:
-        """Restore the user's own CLAUDE.md once this session no longer needs it."""
+        """Give CLAUDE.md back to the user once the current turn is over."""
         if self._owns_claude_md:
             self._owns_claude_md = False
             release_session_claude_md(self.project_dir)
@@ -147,10 +154,10 @@ class SpecChatSession:
 
         # Write system prompt to CLAUDE.md file to avoid Windows command line length limit
         # The SDK will read this via setting_sources=["project"]
-        # (backing up and later restoring a CLAUDE.md the user already had)
+        # (backing up a CLAUDE.md the user already had and restoring it after each turn)
         claude_md_path = self.project_dir / "CLAUDE.md"
-        write_session_claude_md(self.project_dir, system_prompt)
-        self._owns_claude_md = True
+        self._system_prompt = system_prompt
+        self._hold_claude_md()
         logger.info(f"Wrote system prompt to {claude_md_path}")
 
         # Create Claude SDK client with limited tools for spec creation
@@ -215,14 +222,17 @@ class SpecChatSession:
         try:
             async for chunk in self._query_claude(kickoff):
                 yield chunk
-            # Signal that the response is complete (for UI to hide loading indicator)
-            yield {"type": "response_done"}
         except Exception as e:
             logger.exception("Failed to start spec chat")
             yield {
                 "type": "error",
                 "content": f"Failed to start conversation: {str(e)}"
             }
+            return
+        finally:
+            self._release_claude_md()
+        # Signal that the response is complete (for UI to hide loading indicator)
+        yield {"type": "response_done"}
 
     async def send_message(
         self,
@@ -258,17 +268,21 @@ class SpecChatSession:
             "timestamp": datetime.now().isoformat()
         })
 
+        self._hold_claude_md()
         try:
             async for chunk in self._query_claude(user_message, attachments):
                 yield chunk
-            # Signal that the response is complete (for UI to hide loading indicator)
-            yield {"type": "response_done"}
         except Exception as e:
             logger.exception("Error during Claude query")
             yield {
                 "type": "error",
                 "content": f"Error: {str(e)}"
             }
+            return
+        finally:
+            self._release_claude_md()
+        # Signal that the response is complete (for UI to hide loading indicator)
+        yield {"type": "response_done"}
 
     async def _query_claude(
         self,

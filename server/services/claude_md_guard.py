@@ -9,9 +9,12 @@ not be lost.
 
 ``write_session_claude_md`` backs up a pre-existing CLAUDE.md to
 ``.autoforge/CLAUDE.md.user-backup`` before overwriting it, and
-``release_session_claude_md`` restores it once the last session using the
-project's CLAUDE.md has closed. A backup left behind by a crash is never
-overwritten and is restored by the next session that releases.
+``release_session_claude_md`` restores it once the last holder releases.
+Sessions only hold CLAUDE.md while the Claude CLI is starting or answering a
+turn, so the user's file is back in place between turns, after a WebSocket
+disconnect and when the server stops. A backup left behind by a crash is never
+overwritten; ``restore_leftover_claude_md`` puts it back (e.g. before an agent
+run) and so does the next session that releases.
 """
 
 import logging
@@ -70,3 +73,25 @@ def release_session_claude_md(project_dir: Path) -> None:
                 logger.info(f"Restored user's CLAUDE.md in {project_dir}")
             except OSError as e:
                 logger.warning(f"Could not restore CLAUDE.md from {backup}: {e}")
+
+
+def restore_leftover_claude_md(project_dir: Path) -> bool:
+    """
+    Put back a user CLAUDE.md left in the backup by a session that never released
+    (crash, killed server). Skipped while a chat session is mid-turn, since it
+    still needs its prompt; that session restores the file when it releases.
+
+    Returns True if a backup was restored.
+    """
+    key = str(project_dir.resolve())
+    backup = get_claude_md_backup_path(project_dir)
+    with _lock:
+        if _active_sessions.get(key, 0) > 0 or not backup.exists():
+            return False
+        try:
+            os.replace(backup, project_dir / "CLAUDE.md")
+        except OSError as e:
+            logger.warning(f"Could not restore CLAUDE.md from {backup}: {e}")
+            return False
+    logger.info(f"Restored leftover user CLAUDE.md in {project_dir}")
+    return True
