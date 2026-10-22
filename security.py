@@ -1067,36 +1067,27 @@ async def bash_security_hook(input_data, tool_use_id=None, context=None):
 
         # Additional validation for sensitive commands
         if cmd in COMMANDS_NEEDING_EXTRA_VALIDATION:
-            # Find the specific segment containing this command by searching
-            # each segment's extracted commands for a match
-            cmd_segment = ""
-            for segment in segments:
-                if cmd in extract_commands(segment):
-                    cmd_segment = segment
-                    break
-            if not cmd_segment:
-                cmd_segment = command  # Fallback to full command
+            # Validate EVERY segment containing this command, not just the
+            # first one: 'rm -rf dist && rm -rf ../x' must check both.
+            cmd_segments = [segment for segment in segments if cmd in extract_commands(segment)]
+            if not cmd_segments:
+                cmd_segments = [command]  # Fallback to full command
 
-            if cmd == "pkill":
-                # Pass configured extra processes (beyond defaults)
-                extra_procs = pkill_processes - DEFAULT_PKILL_PROCESSES
-                allowed, reason = validate_pkill_command(cmd_segment, extra_procs if extra_procs else None)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-            elif cmd == "chmod":
-                allowed, reason = validate_chmod_command(cmd_segment)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-            elif cmd == "init.sh":
-                allowed, reason = validate_init_script(cmd_segment)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-            elif cmd == "playwright-cli":
-                allowed, reason = validate_playwright_command(cmd_segment)
-                if not allowed:
-                    return {"decision": "block", "reason": reason}
-            elif cmd == "rm":
-                allowed, reason = validate_rm_command(cmd_segment, project_dir)
+            for cmd_segment in cmd_segments:
+                if cmd == "pkill":
+                    # Pass configured extra processes (beyond defaults)
+                    extra_procs = pkill_processes - DEFAULT_PKILL_PROCESSES
+                    allowed, reason = validate_pkill_command(cmd_segment, extra_procs if extra_procs else None)
+                elif cmd == "chmod":
+                    allowed, reason = validate_chmod_command(cmd_segment)
+                elif cmd == "init.sh":
+                    allowed, reason = validate_init_script(cmd_segment)
+                elif cmd == "playwright-cli":
+                    allowed, reason = validate_playwright_command(cmd_segment)
+                elif cmd == "rm":
+                    allowed, reason = validate_rm_command(cmd_segment, project_dir)
+                else:
+                    continue
                 if not allowed:
                     return {"decision": "block", "reason": reason}
 

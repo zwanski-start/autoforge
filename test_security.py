@@ -303,6 +303,26 @@ def test_validate_rm():
                     print(f"  FAIL: {cmd!r} ({description}) - got {'allowed' if allowed else 'blocked'}: {reason}")
                     failed += 1
 
+        # Integration: every rm segment in a compound command is validated
+        hook_cases = [
+            ("rm -rf node_modules; rm -rf /", True),
+            ("rm -rf node_modules && rm -rf ../outside", True),
+            ("rm -rf x || rm -rf esc/", True),
+            ("rm -rf a & rm -rf ../outside", True),
+            ("rm -rf dist && rm -rf build", False),
+            ("chmod +x a.sh && chmod 777 b.sh", True),
+            ("pkill node; pkill bash", True),
+        ]
+        for cmd, should_block in hook_cases:
+            input_data = {"tool_name": "Bash", "tool_input": {"command": cmd}}
+            result = asyncio.run(bash_security_hook(input_data, context={"project_dir": str(project_dir)}))
+            if (result.get("decision") == "block") == should_block:
+                print(f"  PASS: hook {'blocks' if should_block else 'allows'} {cmd!r}")
+                passed += 1
+            else:
+                print(f"  FAIL: hook should {'block' if should_block else 'allow'} {cmd!r}: {result}")
+                failed += 1
+
         # Integration: hook passes project_dir through context
         input_data = {"tool_name": "Bash", "tool_input": {"command": "npm run build && rm -rf /"}}
         result = asyncio.run(bash_security_hook(input_data, context={"project_dir": str(project_dir)}))
